@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "genppt-dynamic-tables"
-version = "0.1.0"
+version = "0.2.0"
 description = "Template-driven dynamic PowerPoint table generation service library"
 requires-python = ">=3.10"
 dependencies = ["python-pptx>=1.0,<2.0"]

@@ -10,6 +10,9 @@
 - 多张完整表优先排列在同一页。
 - 下一张完整表放不下时整体换页；单表超过整页时才拆分。
 - 续页重复表头，生成结果保持为可编辑原生表格。
+- 支持长文本行高、列宽策略、宽表拆列和数字日期格式。
+- 支持同一模板页的多个独立动态表格 block。
+- 空表自动隐藏，并提供续页标题上下文和唯一 Shape 名称。
 - 提供资源上限、模板校验和原子文件写入，便于 Web 服务调用。
 
 ## 项目结构
@@ -35,6 +38,7 @@ docs/
 ├── template-contract.md
 ├── operations.md
 ├── requirements.md
+├── table-features.md
 └── code-review.md
 ```
 
@@ -63,6 +67,7 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 ## 文档
 
 - [需求方案](docs/requirements.md)
+- [动态表格功能与详细协议](docs/table-features.md)
 - [模板与数据协议](docs/template-contract.md)
 - [系统架构](docs/architecture.md)
 - [运行与生产集成](docs/operations.md)

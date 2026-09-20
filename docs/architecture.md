@@ -27,8 +27,8 @@ PPTX compatibility layer
 | `directives.py` | 严格解析模板指令，拒绝未知属性和重复属性 |
 | `data.py` | 校验 `columns`、`rows`，转换安全的显示文本 |
 | `pptx_utils.py` | 集中管理 `python-pptx` 私有接口，避免业务层散落 XML 操作 |
-| `table_renderer.py` | 创建准确行列数的原生表格并复制模板样式 |
-| `service.py` | 保持整表、分页、续页复制和原子保存 |
+| `table_renderer.py` | 行高测量、列宽分配、拆列、溢出处理和原生表格样式复制 |
+| `service.py` | 多 block 区域规划、整表保持、分页、续页复制和原子保存 |
 
 ## 分页决策
 
@@ -42,6 +42,8 @@ PPTX compatibility layer
 表格自身超过完整新页
     → 新页开始，按数据行拆分并重复表头
 ```
+
+分页前先执行不可行布局检查；可以通过换页解决的空间不足不属于错误。
 
 ## 私有 API 边界
 

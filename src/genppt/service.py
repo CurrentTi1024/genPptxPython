@@ -21,7 +21,99 @@ from .pptx_utils import (
     remove_slide,
     replace_shape_text,
 )
-from .table_renderer import add_table_fragment, fragment_height, row_capacity
+from .table_renderer import (
+    PreparedTable,
+    add_table_fragment,
+    prepare_table,
+    split_column_indices,
+)
+
+
+def _row_capacity(prepared: PreparedTable, available: int, row_offset: int) -> int:
+    consumed = prepared.row_heights[0]
+    capacity = 0
+    while row_offset + capacity < len(prepared.rows):
+        next_height = prepared.row_heights[1 + row_offset + capacity]
+        if consumed + next_height > available:
+            break
+        consumed += next_height
+        capacity += 1
+    return capacity
+
+
+def _fragment_plan(
+    prepared: PreparedTable,
+    *,
+    cursor: int,
+    region_top: int,
+    region_bottom: int,
+    table_relative_top: int,
+    non_table_extent: int,
+    minimum_fragment_rows: int,
+) -> tuple[list[tuple[bool, int, int]], int]:
+    full_region_height = region_bottom - region_top
+    minimum_rows = min(minimum_fragment_rows, len(prepared.rows))
+    minimum_table_height = prepared.row_heights[0] + sum(
+        prepared.row_heights[1 : 1 + minimum_rows]
+    )
+    minimum_block_height = max(non_table_extent, table_relative_top + minimum_table_height)
+    if minimum_block_height > full_region_height:
+        raise TemplateError(
+            "table header and minimum data rows cannot fit in the block region; "
+            "increase the region or use shrink/truncate overflow"
+        )
+
+    full_table_height = sum(prepared.row_heights)
+    full_block_height = max(non_table_extent, table_relative_top + full_table_height)
+    plan: list[tuple[bool, int, int]] = []
+    row_offset = 0
+    new_page_before = False
+    if full_block_height > region_bottom - cursor and cursor != region_top:
+        cursor = region_top
+        new_page_before = True
+
+    while row_offset < len(prepared.rows):
+        available_for_table = region_bottom - cursor - table_relative_top
+        remaining = len(prepared.rows) - row_offset
+        capacity = _row_capacity(prepared, available_for_table, row_offset)
+        if capacity < min(minimum_fragment_rows, remaining) and cursor != region_top:
+            cursor = region_top
+            new_page_before = True
+            available_for_table = region_bottom - cursor - table_relative_top
+            capacity = _row_capacity(prepared, available_for_table, row_offset)
+        if capacity == 0:
+            raise TemplateError(
+                f"table row {row_offset + 1} cannot fit in the block region"
+            )
+        if remaining - capacity == 1 and capacity > minimum_fragment_rows:
+            capacity -= 1
+        plan.append((new_page_before, row_offset, capacity))
+        table_height = prepared.row_heights[0] + sum(
+            prepared.row_heights[1 + row_offset : 1 + row_offset + capacity]
+        )
+        block_height = max(non_table_extent, table_relative_top + table_height)
+        cursor += block_height
+        row_offset += capacity
+        new_page_before = row_offset < len(prepared.rows)
+        if new_page_before:
+            cursor = region_top
+    return plan, cursor
+
+
+def _unique_shape_name(
+    base: str,
+    block: RepeatBlock,
+    item_index: int,
+    column_fragment: int,
+    row_fragment: int,
+    kind: str,
+) -> str:
+    stem = base.strip() or kind
+    suffix = (
+        f"__{block.block_name}_i{item_index + 1}"
+        f"_c{column_fragment + 1}_r{row_fragment + 1}_{kind}"
+    )
+    return f"{stem[: max(1, 255 - len(suffix))]}{suffix}"
 
 
 def _render_block_items(
@@ -31,110 +123,153 @@ def _render_block_items(
     items: Sequence[Mapping[str, Any]],
     static_elements: Sequence[Any],
     config: GeneratorConfig,
-) -> None:
-    page_top = block.top
-    page_bottom = presentation.slide_height - config.bottom_margin
-    if page_bottom <= page_top:
-        raise TemplateError("inferred dynamic region has no usable height")
-    cursor = page_top
+    region_bottom: int,
+    insert_after: Any,
+    total_cells_before: int,
+) -> tuple[Any, int]:
+    region_top = block.top
+    if region_bottom <= region_top:
+        raise TemplateError(f"block {block.block_name!r} has no usable layout region")
+    cursor = region_top
     current_slide = source_slide
+    last_inserted_slide = insert_after
     table_prototype = block.table_prototype
     source_table = table_prototype.shape.table
     if any(cell.is_merge_origin or cell.is_spanned for cell in source_table.iter_cells()):
         raise TemplateError("merged cells are not supported in a dynamic table prototype")
     table_relative_top = table_prototype.shape.top - block.top
-    total_cells = 0
+    non_table_extent = max(
+        [0]
+        + [
+            prototype.shape.top - block.top + prototype.shape.height
+            for prototype in block.non_table_prototypes
+        ]
+    )
+    total_cells = total_cells_before
 
     def new_page() -> None:
-        nonlocal current_slide, cursor
+        nonlocal current_slide, cursor, last_inserted_slide
         if len(presentation.slides) >= config.max_output_slides:
             raise TemplateError(f"output slide count exceeds limit {config.max_output_slides}")
         current_slide = clone_static_slide(
-            presentation, source_slide, static_elements, current_slide
+            presentation, source_slide, static_elements, last_inserted_slide
         )
-        cursor = page_top
+        last_inserted_slide = current_slide
+        cursor = region_top
 
     for item_index, item in enumerate(items):
         if not isinstance(item, Mapping):
             raise TemplateError(f"{block.item_path}[{item_index}] must be an object")
         normalized = normalize_table(item, config)
+        if not normalized.rows:
+            continue
         total_cells += len(normalized.labels) * (1 + len(normalized.rows))
         if total_cells > config.max_total_cells:
             raise TemplateError(f"total cell count exceeds limit {config.max_total_cells}")
-        row_offset = 0
-        first_fragment = True
 
-        full_table_height = fragment_height(source_table, 0, len(normalized.rows))
-        full_block_height = max(
-            [table_relative_top + full_table_height]
-            + [
-                prototype.shape.top - block.top + prototype.shape.height
-                for prototype in block.non_table_prototypes
-            ]
+        column_groups = split_column_indices(
+            len(normalized.labels),
+            table_prototype.shape.width,
+            normalized.options.min_column_width_inches
+            or config.min_column_width_inches,
+            normalized.options.repeat_leading_columns,
         )
-        if full_block_height > page_bottom - cursor and cursor != page_top:
-            new_page()
-
-        while first_fragment or row_offset < len(normalized.rows):
-            remaining = len(normalized.rows) - row_offset
-            available = page_bottom - cursor
-            if full_block_height <= available and first_fragment:
-                capacity = remaining
-            else:
-                capacity = row_capacity(
-                    source_table, available, table_relative_top, row_offset, remaining
-                )
-            if remaining == 0:
-                capacity = 0
-                required = table_relative_top + fragment_height(source_table, 0, 0)
-                if required > available and cursor != page_top:
-                    new_page()
-                    available = page_bottom - cursor
-                if required > available:
-                    raise TemplateError("table header cannot fit in the inferred dynamic region")
-            elif capacity < min(config.minimum_fragment_rows, remaining) and cursor != page_top:
-                new_page()
-                available = page_bottom - cursor
-                capacity = row_capacity(
-                    source_table, available, table_relative_top, row_offset, remaining
-                )
-            if remaining > 0 and capacity == 0:
-                raise TemplateError("a table row cannot fit in the inferred dynamic region")
-            if remaining - capacity == 1 and capacity > config.minimum_fragment_rows:
-                capacity -= 1
-
-            block_bottom = cursor
-            if first_fragment or config.repeat_non_table_shapes_on_continuation:
-                for prototype in block.non_table_prototypes:
-                    generated = append_element(current_slide, prototype.element, source_slide)
-                    generated.left = prototype.shape.left
-                    generated.top = cursor + (prototype.shape.top - block.top)
-                    generated_name = render_expression(prototype.directive.body, item).strip()
-                    generated.name = generated_name or (
-                        f"{block.block_name}_shape_{item_index + 1}_{generated.shape_id}"
-                    )
-                    replace_shape_text(generated, dict(item))
-                    block_bottom = max(block_bottom, generated.top + generated.height)
-
-            fragment_rows = normalized.rows[row_offset : row_offset + capacity]
-            table_top = cursor + table_relative_top
-            _, table_height = add_table_fragment(
-                current_slide,
-                table_prototype,
-                normalized,
-                item,
-                table_prototype.shape.left,
-                table_top,
-                row_offset,
-                fragment_rows,
-                item_index,
+        for column_index, column_group in enumerate(column_groups):
+            prepared = prepare_table(source_table, normalized, column_group)
+            plan, final_cursor = _fragment_plan(
+                prepared,
+                cursor=cursor,
+                region_top=region_top,
+                region_bottom=region_bottom,
+                table_relative_top=table_relative_top,
+                non_table_extent=non_table_extent,
+                minimum_fragment_rows=config.minimum_fragment_rows,
             )
-            block_bottom = max(block_bottom, table_top + table_height)
-            cursor = block_bottom + config.block_gap
-            row_offset += capacity
-            first_fragment = False
-            if row_offset < len(normalized.rows):
-                new_page()
+            for fragment_index, (page_break, row_offset, row_count) in enumerate(plan):
+                if page_break:
+                    new_page()
+                is_continuation = column_index > 0 or fragment_index > 0
+                context = dict(item)
+                context["_page"] = {
+                    "isContinuation": is_continuation,
+                    "continuationSuffix": "（续）" if is_continuation else "",
+                    "fragmentIndex": fragment_index + 1,
+                    "fragmentCount": len(plan),
+                    "columnFragmentIndex": column_index + 1,
+                    "columnFragmentCount": len(column_groups),
+                }
+                block_bottom = cursor
+                if fragment_index == 0 or config.repeat_non_table_shapes_on_continuation:
+                    for prototype_index, prototype in enumerate(block.non_table_prototypes):
+                        generated = append_element(
+                            current_slide, prototype.element, source_slide
+                        )
+                        generated.left = prototype.shape.left
+                        generated.top = cursor + (prototype.shape.top - block.top)
+                        base_name = render_expression(prototype.directive.body, context)
+                        generated.name = _unique_shape_name(
+                            base_name,
+                            block,
+                            item_index,
+                            column_index,
+                            fragment_index,
+                            f"shape{prototype_index + 1}",
+                        )
+                        replace_shape_text(generated, context)
+                        block_bottom = max(block_bottom, generated.top + generated.height)
+
+                table_top = cursor + table_relative_top
+                base_name = render_expression(table_prototype.directive.body, context)
+                table_name = _unique_shape_name(
+                    base_name,
+                    block,
+                    item_index,
+                    column_index,
+                    fragment_index,
+                    "table",
+                )
+                _, table_height = add_table_fragment(
+                    current_slide,
+                    table_prototype,
+                    prepared,
+                    table_prototype.shape.left,
+                    table_top,
+                    row_offset,
+                    row_count,
+                    table_name,
+                )
+                block_bottom = max(block_bottom, table_top + table_height)
+                cursor = block_bottom + config.block_gap
+            cursor = final_cursor + config.block_gap
+    return last_inserted_slide, total_cells
+
+
+def _overlaps_horizontally(first: RepeatBlock, second: RepeatBlock) -> bool:
+    return first.left < second.right and second.left < first.right
+
+
+def _blocks_overlap(first: RepeatBlock, second: RepeatBlock) -> bool:
+    return (
+        _overlaps_horizontally(first, second)
+        and first.top < second.bottom
+        and second.top < first.bottom
+    )
+
+
+def _region_bottom(
+    block: RepeatBlock,
+    blocks: Sequence[RepeatBlock],
+    page_bottom: int,
+    gap: int,
+) -> int:
+    boundaries = [
+        other.top - gap
+        for other in blocks
+        if other is not block
+        and _overlaps_horizontally(block, other)
+        and other.top >= block.bottom
+    ]
+    return min(boundaries, default=page_bottom)
 
 
 def _save_atomically(presentation: Any, output_path: Path) -> None:
@@ -158,7 +293,7 @@ def generate_presentation(
     *,
     config: GeneratorConfig | None = None,
 ) -> Path:
-    """Generate a PPTX from one template slide and a table-array payload."""
+    """Generate a PPTX from template table blocks and array payloads."""
     config = config or GeneratorConfig()
     template_path = Path(template_path)
     output_path = Path(output_path)
@@ -184,17 +319,26 @@ def generate_presentation(
         )
 
     source_slide, blocks, dynamic_ids = matching_slides[0]
-    if len(blocks) != 1:
-        raise TemplateError("one template slide must contain exactly one repeated table block")
     for unused_slide, _, _ in matching_slides[1:]:
         remove_slide(presentation, unused_slide)
 
-    block = blocks[0]
-    items = resolve_path(data, block.item_path)
-    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
-        raise TemplateError(f"{block.item_path!r} must resolve to an array")
-    if len(items) > config.max_tables:
+    block_items: list[tuple[RepeatBlock, Sequence[Mapping[str, Any]]]] = []
+    table_count = 0
+    for block in blocks:
+        items = resolve_path(data, block.item_path)
+        if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+            raise TemplateError(f"{block.item_path!r} must resolve to an array")
+        table_count += len(items)
+        block_items.append((block, items))
+    if table_count > config.max_tables:
         raise TemplateError(f"table count exceeds configured limit {config.max_tables}")
+
+    for index, block in enumerate(blocks):
+        for other in blocks[index + 1 :]:
+            if _blocks_overlap(block, other):
+                raise TemplateError(
+                    f"block {block.block_name!r} overlaps block {other.block_name!r}"
+                )
 
     static_elements = [
         deepcopy(shape._element)
@@ -204,6 +348,27 @@ def generate_presentation(
     for shape in list(source_slide.shapes):
         if shape.shape_id in dynamic_ids:
             remove_shape(shape)
-    _render_block_items(presentation, source_slide, block, items, static_elements, config)
+
+    insert_after = source_slide
+    total_cells = 0
+    page_bottom = presentation.slide_height - config.bottom_margin
+    for block, items in block_items:
+        region_bottom = _region_bottom(
+            block,
+            blocks,
+            page_bottom,
+            config.block_gap,
+        )
+        insert_after, total_cells = _render_block_items(
+            presentation,
+            source_slide,
+            block,
+            items,
+            static_elements,
+            config,
+            region_bottom,
+            insert_after,
+            total_cells,
+        )
     _save_atomically(presentation, output_path)
     return output_path

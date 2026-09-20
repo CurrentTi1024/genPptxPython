@@ -20,6 +20,10 @@ class GeneratorConfig:
     max_total_cells: int = 200_000
     max_output_slides: int = 500
     max_cell_text_length: int = 10_000
+    min_column_width_inches: float = 0.65
+    max_row_height_inches: float = 1.4
+    min_font_size_points: float = 8.0
+    default_overflow: str = "wrap"
 
     def __post_init__(self) -> None:
         positive_fields = (
@@ -32,6 +36,12 @@ class GeneratorConfig:
         )
         if self.bottom_margin_inches < 0 or self.block_gap_points < 0:
             raise ValueError("margins and gaps cannot be negative")
+        if self.min_column_width_inches <= 0 or self.max_row_height_inches <= 0:
+            raise ValueError("column and row size limits must be positive")
+        if self.min_font_size_points <= 0:
+            raise ValueError("minimum font size must be positive")
+        if self.default_overflow not in {"wrap", "shrink", "truncate", "error"}:
+            raise ValueError("unsupported default overflow policy")
         if self.minimum_fragment_rows < 1:
             raise ValueError("minimum_fragment_rows must be positive")
         for field in positive_fields:

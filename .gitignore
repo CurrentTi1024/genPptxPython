@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.DS_Store
+~$*.pptx
+build/
+dist/
+*.egg-info/
+output/
+*.pptx
+!tests/fixtures/*.pptx

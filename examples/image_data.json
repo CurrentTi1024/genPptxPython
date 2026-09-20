@@ -1,0 +1,27 @@
+{
+  "imgs": [
+    "tests/fixtures/images/wide.png",
+    "tests/fixtures/images/tall.png",
+    "",
+    "tests/fixtures/images/missing.png",
+    "tests/fixtures/images/square.png"
+  ],
+  "imageGroups": [
+    {
+      "title": "横图设备",
+      "imagePath": "tests/fixtures/images/wide.png"
+    },
+    {
+      "title": "竖图设备",
+      "imagePath": "tests/fixtures/images/tall.png"
+    },
+    {
+      "title": "无效设备",
+      "imagePath": "tests/fixtures/images/missing.png"
+    },
+    {
+      "title": "方图设备",
+      "imagePath": "tests/fixtures/images/square.png"
+    }
+  ]
+}

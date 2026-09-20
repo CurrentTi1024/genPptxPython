@@ -3,9 +3,10 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Sequence
 
-from .directives import parse_foreach, render_expression
+from .directives import parse_foreach
 from .errors import TemplateError
 from .models import RepeatBlock, ShapePrototype
+from .text_renderer import replace_text_frame_expressions
 
 
 def compile_blocks(slide: Any) -> tuple[list[RepeatBlock], set[int]]:
@@ -87,14 +88,7 @@ def append_element(target_slide: Any, element: Any, source_slide: Any) -> Any:
 def replace_shape_text(shape: Any, context: dict[str, Any]) -> None:
     if not shape.has_text_frame:
         return
-    for paragraph in shape.text_frame.paragraphs:
-        if paragraph.runs:
-            original = "".join(run.text for run in paragraph.runs)
-            paragraph.runs[0].text = render_expression(original, context)
-            for run in paragraph.runs[1:]:
-                run.text = ""
-        else:
-            paragraph.text = render_expression(paragraph.text, context)
+    replace_text_frame_expressions(shape.text_frame, context)
 
 
 def clone_static_slide(

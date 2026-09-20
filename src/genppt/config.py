@@ -24,6 +24,11 @@ class GeneratorConfig:
     max_row_height_inches: float = 1.4
     min_font_size_points: float = 8.0
     default_overflow: str = "wrap"
+    max_images: int = 1_000
+    max_image_bytes: int = 25 * 1024 * 1024
+    max_total_image_bytes: int = 250 * 1024 * 1024
+    max_image_pixels: int = 40_000_000
+    allowed_image_roots: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         positive_fields = (
@@ -33,6 +38,10 @@ class GeneratorConfig:
             "max_total_cells",
             "max_output_slides",
             "max_cell_text_length",
+            "max_images",
+            "max_image_bytes",
+            "max_total_image_bytes",
+            "max_image_pixels",
         )
         if self.bottom_margin_inches < 0 or self.block_gap_points < 0:
             raise ValueError("margins and gaps cannot be negative")

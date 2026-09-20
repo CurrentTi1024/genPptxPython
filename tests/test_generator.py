@@ -96,6 +96,29 @@ def _multi_block_template(path: Path) -> None:
 
 
 class GeneratePresentationTest(unittest.TestCase):
+    def test_dynamic_cell_value_is_not_reinterpreted_as_root_expression(self) -> None:
+        data = {
+            "tables": [
+                {
+                    "title": "字面量",
+                    "columns": ["内容"],
+                    "rows": [["保留 {{rootValue}} 原文"]],
+                }
+            ],
+            "rootValue": "不应替换",
+        }
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "generated.pptx"
+            generate_presentation(FIXTURES / "test2.pptx", data, output)
+            presentation = Presentation(output)
+            table = next(
+                shape.table
+                for slide in presentation.slides
+                for shape in slide.shapes
+                if shape.has_table
+            )
+            self.assertEqual(table.cell(1, 0).text, "保留 {{rootValue}} 原文")
+
     def test_test_template_generates_dynamic_tables(self) -> None:
         data = json.loads((ROOT / "examples/test_data.json").read_text(encoding="utf-8"))
         with TemporaryDirectory() as directory:
@@ -486,14 +509,22 @@ class GeneratePresentationTest(unittest.TestCase):
                 FIXTURES / "test2.pptx", {"tables": []}, FIXTURES / "test2.pptx"
             )
 
-    def test_non_table_foreach_is_not_claimed_by_table_generator(self) -> None:
+    def test_image_foreach_is_routed_to_image_generator(self) -> None:
         with TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(TemplateError, "no foreach table blocks"):
-                generate_presentation(
-                    FIXTURES / "test-img.pptx",
-                    {"imgs": [], "tables": []},
-                    Path(directory) / "out.pptx",
+            output = Path(directory) / "out.pptx"
+            generate_presentation(
+                FIXTURES / "test-img.pptx",
+                {"imgs": [], "imageGroups": []},
+                output,
+            )
+            presentation = Presentation(output)
+            self.assertFalse(
+                any(
+                    shape.shape_type == 13
+                    for slide in presentation.slides
+                    for shape in slide.shapes
                 )
+            )
 
     def test_existing_output_survives_validation_failure(self) -> None:
         with TemporaryDirectory() as directory:

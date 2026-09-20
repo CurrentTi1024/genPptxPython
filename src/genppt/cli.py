@@ -11,7 +11,9 @@ from .service import generate_presentation
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate dynamic tables from a PPTX template")
+    parser = argparse.ArgumentParser(
+        description="Generate text, images, and tables from a PPTX template"
+    )
     parser.add_argument("template", type=Path)
     parser.add_argument("data", type=Path)
     parser.add_argument("output", type=Path)

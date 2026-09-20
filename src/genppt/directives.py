@@ -9,11 +9,16 @@ from .models import ForeachDirective
 
 
 FOREACH_RE = re.compile(
-    r"^\s*<foreach\s+(?P<attrs>[^>]*)>(?P<body>.*?)</foreach>\s*$",
+    r"^\s*<foreach\s+(?P<attrs>[^>]*)>(?P<body>.*?)</foreach>"
+    r"\s*(?:\((?P<mode>x|y|x\s*,\s*y)\))?\s*$",
     re.DOTALL,
 )
 EXPRESSION_RE = re.compile(r"{{\s*([A-Za-z_][\w.]*)\s*}}")
-ALLOWED_FOREACH_ATTRIBUTES = frozenset({"item", "block"})
+SINGLE_IMAGE_RE = re.compile(
+    r"^\s*{{\s*(?P<path>[A-Za-z_][\w.]*)\s*}}"
+    r"\s*(?:\((?P<mode>x|y|x\s*,\s*y)\))?\s*$"
+)
+ALLOWED_FOREACH_ATTRIBUTES = frozenset({"item", "block", "rows", "cols"})
 
 
 def parse_foreach(name: str, shape_id: int) -> ForeachDirective | None:
@@ -39,7 +44,36 @@ def parse_foreach(name: str, shape_id: int) -> ForeachDirective | None:
     if not item_path:
         raise TemplateError(f"foreach directive is missing item: {name!r}")
     block_name = attrs.get("block") or f"__shape_{shape_id}"
-    return ForeachDirective(item_path, block_name, match.group("body").strip())
+    dimensions: dict[str, int | None] = {"rows": None, "cols": None}
+    for key in dimensions:
+        if key not in attrs:
+            continue
+        try:
+            value = int(attrs[key])
+        except ValueError as exc:
+            raise TemplateError(f"foreach {key} must be a positive integer") from exc
+        if value < 1:
+            raise TemplateError(f"foreach {key} must be a positive integer")
+        dimensions[key] = value
+    mode = match.group("mode")
+    if mode:
+        mode = mode.replace(" ", "")
+    return ForeachDirective(
+        item_path,
+        block_name,
+        match.group("body").strip(),
+        dimensions["rows"],
+        dimensions["cols"],
+        mode,
+    )
+
+
+def parse_single_image(name: str) -> tuple[str, str] | None:
+    match = SINGLE_IMAGE_RE.match(name or "")
+    if not match:
+        return None
+    mode = (match.group("mode") or "x").replace(" ", "")
+    return match.group("path"), mode
 
 
 def resolve_path(value: Any, path: str) -> Any:

@@ -12,7 +12,9 @@ from .config import GeneratorConfig
 from .data import normalize_table
 from .directives import render_expression, resolve_path
 from .errors import TemplateError
+from .image_renderer import process_images
 from .models import RepeatBlock
+from .planner import analyze_template, validate_plan
 from .pptx_utils import (
     append_element,
     clone_static_slide,
@@ -27,6 +29,7 @@ from .table_renderer import (
     prepare_table,
     split_column_indices,
 )
+from .text_renderer import process_text_expressions
 
 
 def _row_capacity(prepared: PreparedTable, available: int, row_offset: int) -> int:
@@ -286,32 +289,19 @@ def _save_atomically(presentation: Any, output_path: Path) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
-def generate_presentation(
-    template_path: str | Path,
+def _process_table_blocks(
+    presentation: Any,
     data: Mapping[str, Any],
-    output_path: str | Path,
-    *,
-    config: GeneratorConfig | None = None,
-) -> Path:
-    """Generate a PPTX from template table blocks and array payloads."""
-    config = config or GeneratorConfig()
-    template_path = Path(template_path)
-    output_path = Path(output_path)
-    if not template_path.is_file():
-        raise TemplateError(f"template does not exist: {template_path}")
-    if template_path.resolve() == output_path.resolve():
-        raise TemplateError("output path must differ from template path")
-    if not isinstance(data, Mapping):
-        raise TemplateError("root payload must be an object")
-
-    presentation = Presentation(str(template_path))
+    config: GeneratorConfig,
+) -> bool:
+    """Expand all table blocks in an already loaded presentation."""
     matching_slides: list[tuple[Any, list[RepeatBlock], set[int]]] = []
     for slide in presentation.slides:
         blocks, dynamic_ids = compile_blocks(slide)
         if blocks:
             matching_slides.append((slide, blocks, dynamic_ids))
     if not matching_slides:
-        raise TemplateError("template contains no foreach table blocks")
+        return False
     if len(matching_slides) > 1 and not config.allow_additional_template_slides:
         raise TemplateError(
             "template contains foreach blocks on multiple slides; keep one template slide "
@@ -370,5 +360,43 @@ def generate_presentation(
             insert_after,
             total_cells,
         )
+    return True
+
+
+def generate_presentation(
+    template_path: str | Path,
+    data: Mapping[str, Any],
+    output_path: str | Path,
+    *,
+    config: GeneratorConfig | None = None,
+) -> Path:
+    """Generate table and image expansions from a PPTX template."""
+    config = config or GeneratorConfig()
+    template_path = Path(template_path)
+    output_path = Path(output_path)
+    if not template_path.is_file():
+        raise TemplateError(f"template does not exist: {template_path}")
+    if template_path.resolve() == output_path.resolve():
+        raise TemplateError("output path must differ from template path")
+    if not isinstance(data, Mapping):
+        raise TemplateError("root payload must be an object")
+
+    presentation = Presentation(str(template_path))
+    if len(presentation.slides) > config.max_output_slides:
+        raise TemplateError(
+            f"template slide count exceeds limit {config.max_output_slides}"
+        )
+    plan = analyze_template(presentation)
+    validate_plan(plan)
+    # Resolve root-level text before generating dynamic shapes. Continuation
+    # pages clone the resolved static shapes, while dynamic business values
+    # containing literal ``{{...}}`` are never interpreted a second time.
+    process_text_expressions(presentation, data)
+    if plan.has_images:
+        process_images(presentation, data, config)
+    if len(presentation.slides) > config.max_output_slides:
+        raise TemplateError(f"output slide count exceeds limit {config.max_output_slides}")
+    if plan.has_tables:
+        _process_table_blocks(presentation, data, config)
     _save_atomically(presentation, output_path)
     return output_path

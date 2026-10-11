@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import re
 import shlex
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from .errors import TemplateError
 from .models import ForeachDirective
-
 
 FOREACH_RE = re.compile(
     r"^\s*<foreach\s+(?P<attrs>[^>]*)>(?P<body>.*?)</foreach>"
@@ -18,11 +18,20 @@ SINGLE_IMAGE_RE = re.compile(
     r"^\s*{{\s*(?P<path>[A-Za-z_][\w.]*)\s*}}"
     r"\s*(?:\((?P<mode>x|y|x\s*,\s*y)\))?\s*$"
 )
-ALLOWED_FOREACH_ATTRIBUTES = frozenset({"item", "block", "rows", "cols"})
+ALLOWED_FOREACH_ATTRIBUTES = frozenset({"item", "block", "rows", "cols", "page"})
+
+
+def normalize_image_suffix(name: str) -> str:
+    # Normalize only the terminal size suffix, never a user's literal Shape name.
+    return re.sub(
+        r"[（(]\s*([xy]\s*(?:[,，]\s*y)?)\s*[）)]\s*$",
+        lambda match: "(" + match.group(1).replace("，", ",") + ")",
+        name or "",
+    )
 
 
 def parse_foreach(name: str, shape_id: int) -> ForeachDirective | None:
-    match = FOREACH_RE.match(name or "")
+    match = FOREACH_RE.match(normalize_image_suffix(name))
     if not match:
         return None
     attrs: dict[str, str] = {}
@@ -58,6 +67,11 @@ def parse_foreach(name: str, shape_id: int) -> ForeachDirective | None:
     mode = match.group("mode")
     if mode:
         mode = mode.replace(" ", "")
+    page = attrs.get("page")
+    if page is not None and page not in {"flow", "group"}:
+        raise TemplateError("foreach page must be flow or group")
+    if not re.fullmatch(r"[A-Za-z_][\w.]*", item_path):
+        raise TemplateError("foreach item must be a data path")
     return ForeachDirective(
         item_path,
         block_name,
@@ -65,15 +79,28 @@ def parse_foreach(name: str, shape_id: int) -> ForeachDirective | None:
         dimensions["rows"],
         dimensions["cols"],
         mode,
+        page,
     )
 
 
 def parse_single_image(name: str) -> tuple[str, str] | None:
-    match = SINGLE_IMAGE_RE.match(name or "")
+    match = SINGLE_IMAGE_RE.match(normalize_image_suffix(name))
     if not match:
         return None
     mode = (match.group("mode") or "x").replace(" ", "")
     return match.group("path"), mode
+
+
+def optional_path(value: Any, path: str) -> Any:
+    try:
+        return resolve_path(value, path)
+    except TemplateError:
+        return None
+
+
+def select_value(body: str, context: Any) -> Any:
+    match = EXPRESSION_RE.fullmatch(body)
+    return optional_path(context, match.group(1)) if match else context
 
 
 def resolve_path(value: Any, path: str) -> Any:

@@ -18,6 +18,7 @@ def main() -> None:
     parser.add_argument("data", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--bottom-margin-in", type=float, default=0.55)
+    parser.add_argument("--continuation-top-margin-in", type=float, default=0.55)
     parser.add_argument("--block-gap-pt", type=float, default=12.0)
     parser.add_argument("--allow-additional-template-slides", action="store_true")
     parser.add_argument(
@@ -28,15 +29,16 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s %(message)s")
-    config = GeneratorConfig(
-        bottom_margin_inches=args.bottom_margin_in,
-        block_gap_points=args.block_gap_pt,
-        allow_additional_template_slides=args.allow_additional_template_slides,
-    )
     try:
+        config = GeneratorConfig(
+            bottom_margin_inches=args.bottom_margin_in,
+            continuation_top_margin_inches=args.continuation_top_margin_in,
+            block_gap_points=args.block_gap_pt,
+            allow_additional_template_slides=args.allow_additional_template_slides,
+        )
         payload = json.loads(args.data.read_text(encoding="utf-8"))
         result = generate_presentation(args.template, payload, args.output, config=config)
-    except (OSError, json.JSONDecodeError, GenPptError) as exc:
+    except (OSError, ValueError, GenPptError) as exc:
         parser.exit(2, f"generation failed: {exc}\n")
     logging.info("generated %s", result)
 

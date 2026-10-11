@@ -1,57 +1,43 @@
-# 运行与生产集成
+# 生产运行与集成（v0.4）
 
-## Python 调用
+## 调用
 
-```python
-from pathlib import Path
+Python 3.10+：
 
-from genppt import GeneratorConfig, generate_presentation
-
-output = generate_presentation(
-    Path("template.pptx"),
-    payload,
-    Path("output.pptx"),
-    config=GeneratorConfig(),
-)
+```bash
+python -m pip install -e .
+genppt TEMPLATE.pptx DATA.json OUTPUT.pptx
 ```
 
-服务每次调用都创建独立的 `Presentation`，没有进程内共享模板状态。输出先写入同目录临时文件，再使用原子替换，生成失败不会留下半成品输出。
+HTTP 适配器调用 generate_presentation，模板路径、图片目录和输出目录由服务端控制。每个任务使用独立目录和输出名称。TemplateError 映射为可读的 4xx，未知异常记录日志后返回 5xx。
 
-## 默认资源限制
+## 配置
 
-| 限制 | 默认值 |
-|---|---:|
-| 表格数量 | 200 |
-| 单表列数 | 50 |
-| 单表数据行 | 10,000 |
-| 总单元格 | 200,000 |
-| 输出页数 | 500 |
-| 单元格字符数 | 10,000 |
-| 默认最小列宽 | 0.65 英寸 |
-| 默认最大行高 | 1.4 英寸 |
-| 缩小策略最小字号 | 8 磅 |
-| 图片数量 | 1,000 |
-| 单图片文件大小 | 25 MB |
-| 图片总文件大小 | 250 MB |
-| 单图片像素 | 40,000,000 |
+- continuation_top_margin_inches：续页内容顶部，默认 0.55。
+- bottom_margin_inches：页脚预留，默认 0.55。
+- block_gap_points：不同组的间距，默认 12。
+- minimum_fragment_rows：长表尽量避免小碎片，默认 2；完整续页容量不足两行时仍允许一行。
+- allowed_image_roots：允许的本地图片目录，生产环境应配置。
+- max_tables/max_total_cells/max_output_slides：跨全文件累计。
+- max_images/max_image_bytes/max_total_image_bytes/max_image_pixels：图片资源限制。
+- max_loop_items/max_text_paragraphs/max_text_characters：循环及文字资源限制。
+- max_template_bytes/max_template_uncompressed_bytes/max_template_parts：默认 50 MiB / 250 MiB / 10,000 个部件。
 
-HTTP 层应将 `TemplateError` 映射为 4xx 参数或模板错误；文件系统和未知异常映射为 5xx。不要把内部堆栈直接返回给调用方。
+旧 allow_additional_template_slides、repeat_non_table_shapes_on_continuation 参数只保留调用兼容，不再控制页面行为。
 
-当图片路径来自最终用户时，必须设置 `allowed_image_roots`，将读取范围限制到上传目录和受控素材目录。图片 URL 不会被下载。
+## 并发和文件
 
-## 并发和性能
+一次请求只加载一次 PPTX。高负载使用进程池，限制并发和任务超时。原子保存可防止失败破坏已有输出，但不能解决多个请求写同一文件的业务竞态，应使用唯一输出路径。
 
-- 主要开销与总单元格数量和输出页数近似线性相关。
-- 每个请求会在内存中持有一份 PPTX 对象，不建议在线程中处理超大文件。
-- Web 服务建议将生成任务放入受限进程池，并设置请求体、执行时间和输出文件大小限制。
-- 模板可在业务层按文件哈希缓存验证结果，但不要复用可变的 `Presentation` 实例。
+不接收任意客户端服务器文件路径；上传目录及图片素材需要受控。HTTP 层仍应限制请求体与上传大小；库内部另有模板压缩/解压与部件上限。累计单元格上限同时约束输入数据和含重复表头的生成结果。
 
-## 发布前检查
+## 回归与示例
 
 ```bash
 PYTHONPATH=src python -m unittest discover -s tests -v
-PYTHONPATH=src python -m compileall -q src tests
-git diff --check
+PYTHONPATH=src python examples/run_multipage_demo.py
 ```
 
-对关键模板还应生成真实 PPTX，运行包结构与布局检查，并至少使用 LibreOffice 或 PowerPoint 渲染全部页面进行视觉复核。
+示例读取 tests/fixtures/test-multipage.pptx，输出到 output/multipage-demo。使用 --prepare --source PATH 可从三页源模板制作副本，原件不覆盖。数据和结果在输出目录生成。
+
+文字高度估算不能替代渲染检查。模板、字体或依赖升级时应执行包检查、几何检查和真实渲染。

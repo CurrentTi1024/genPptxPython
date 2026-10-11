@@ -10,3 +10,4 @@ dist/
 output/
 *.pptx
 !tests/fixtures/*.pptx
+~$*.pptx

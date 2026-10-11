@@ -57,7 +57,7 @@ class TextGenerationTest(unittest.TestCase):
             self.assertEqual("".join(run.text for run in result.runs), "前缀 张三 后缀")
             self.assertTrue(result.runs[0].font.bold)
             self.assertEqual(result.runs[0].font.color.rgb, RGBColor(255, 0, 0))
-            self.assertTrue(result.runs[1].font.italic)
+            self.assertTrue(result.runs[-1].font.italic)
 
     def test_static_table_cells_are_replaced(self) -> None:
         with TemporaryDirectory() as directory:
@@ -83,7 +83,7 @@ class TextGenerationTest(unittest.TestCase):
             generate_presentation(template, {}, output)
             self.assertEqual(Presentation(output).slides[0].shapes[0].text, "固定内容")
 
-    def test_unclaimed_text_foreach_is_rejected_instead_of_silently_ignored(self) -> None:
+    def test_standalone_text_foreach_supports_empty_array(self) -> None:
         with TemporaryDirectory() as directory:
             template = Path(directory) / "template.pptx"
             output = Path(directory) / "output.pptx"
@@ -92,8 +92,8 @@ class TextGenerationTest(unittest.TestCase):
             shape.name = "<foreach item=items>{{name}}</foreach>"
             shape.text = "{{name}}"
             presentation.save(template)
-            with self.assertRaisesRegex(TemplateError, "unsupported foreach"):
-                generate_presentation(template, {"items": []}, output)
+            generate_presentation(template, {"items": []}, output)
+            self.assertEqual(len(Presentation(output).slides[0].shapes), 0)
 
     def test_malformed_foreach_is_rejected_during_template_planning(self) -> None:
         with TemporaryDirectory() as directory:
@@ -103,7 +103,7 @@ class TextGenerationTest(unittest.TestCase):
             shape = slide.shapes.add_textbox(0, 0, Inches(4), Inches(1))
             shape.name = "<foreach item=items>{{name}}"
             presentation.save(template)
-            with self.assertRaisesRegex(TemplateError, "unsupported foreach"):
+            with self.assertRaisesRegex(TemplateError, "malformed foreach"):
                 generate_presentation(template, {"items": []}, output)
 
 

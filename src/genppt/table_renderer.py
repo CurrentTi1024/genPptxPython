@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import math
 import unicodedata
+from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 from pptx.util import Inches, Pt
 
@@ -66,6 +67,9 @@ def set_cell_text(
     target_paragraph = target_cell.text_frame.paragraphs[0]
     target_paragraph.alignment = source_paragraph.alignment
     target_paragraph.level = source_paragraph.level
+    if source_paragraph._p.pPr is not None:
+        current = target_paragraph._p.get_or_add_pPr()
+        target_paragraph._p.replace(current, deepcopy(source_paragraph._p.pPr))
     if source_paragraph.runs and target_paragraph.runs:
         source_r_pr = source_paragraph.runs[0]._r.get_or_add_rPr()
         target_r_pr = target_paragraph.runs[0]._r.get_or_add_rPr()
@@ -95,8 +99,7 @@ def split_column_indices(
     payload_size = max_columns - repeat
     while cursor < column_count:
         groups.append(
-            list(range(repeat))
-            + list(range(cursor, min(column_count, cursor + payload_size)))
+            list(range(repeat)) + list(range(cursor, min(column_count, cursor + payload_size)))
         )
         cursor += payload_size
     return groups
@@ -143,9 +146,7 @@ def column_widths(
         weights = [
             float(
                 source_widths[
-                    source_column_index(
-                        len(source_widths), target_index, len(column_indices)
-                    )
+                    source_column_index(len(source_widths), target_index, len(column_indices))
                 ]
             )
             for target_index in range(len(column_indices))
@@ -196,7 +197,7 @@ def prepare_table(
         required_height = 0
         row_fonts: list[float | None] = []
         metrics: list[tuple[float, float, int]] = []
-        for target_index, (value, width) in enumerate(zip(values, widths)):
+        for target_index, (value, width) in enumerate(zip(values, widths, strict=True)):
             source_col = source_column_index(
                 len(source_table.columns), target_index, len(column_indices)
             )
@@ -217,7 +218,7 @@ def prepare_table(
         if required_height > max_height and overflow == "error":
             raise TemplateError(f"table row {row_index} exceeds maxRowHeight")
         if required_height > max_height and overflow in {"shrink", "truncate"}:
-            for index, (value, metric) in enumerate(zip(values, metrics)):
+            for index, (value, metric) in enumerate(zip(values, metrics, strict=True)):
                 width_points, base_size, vertical = metric
                 chosen_size = base_size
                 if overflow == "shrink":
@@ -270,10 +271,12 @@ def add_table_fragment(
         prepared.font_sizes[0],
         *prepared.font_sizes[1 + row_offset : 1 + row_offset + row_count],
     ]
-    for target_row_index, (row_values, row_fonts) in enumerate(zip(values, font_rows)):
+    for target_row_index, (row_values, row_fonts) in enumerate(zip(values, font_rows, strict=True)):
         global_data_index = None if target_row_index == 0 else row_offset + target_row_index - 1
         source_row = source_row_index(len(source_table.rows), global_data_index)
-        for target_col_index, (value, font_size) in enumerate(zip(row_values, row_fonts)):
+        for target_col_index, (value, font_size) in enumerate(
+            zip(row_values, row_fonts, strict=True)
+        ):
             source_col = source_column_index(
                 len(source_table.columns), target_col_index, len(prepared.labels)
             )

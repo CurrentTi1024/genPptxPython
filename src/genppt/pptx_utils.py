@@ -1,47 +1,185 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Sequence
+from typing import Any
 
-from .directives import parse_foreach
-from .errors import TemplateError
-from .models import RepeatBlock, ShapePrototype
-from .text_renderer import replace_text_frame_expressions
+from pptx.oxml.xmlchemy import OxmlElement
 
 
-def compile_blocks(slide: Any) -> tuple[list[RepeatBlock], set[int]]:
-    grouped: dict[tuple[str, str], list[ShapePrototype]] = {}
-    for shape in slide.shapes:
-        directive = parse_foreach(shape.name, shape.shape_id)
-        if directive is None:
-            continue
-        grouped.setdefault((directive.item_path, directive.block_name), []).append(
-            ShapePrototype(shape, directive, deepcopy(shape._element))
+def _merge_properties(base: Any, overlay: Any) -> Any:
+    result = deepcopy(base) if base is not None else OxmlElement("a:pPr")
+    if overlay is None:
+        return result
+    result.attrib.update(overlay.attrib)
+    for child in overlay:
+        local = child.tag.rsplit("}", 1)[-1]
+        choices = (
+            {"buNone", "buChar", "buAutoNum", "buBlip"},
+            {"buClrTx", "buClr"},
+            {"buSzTx", "buSzPct", "buSzPts"},
+            {"buFontTx", "buFont"},
+            {"solidFill", "noFill", "gradFill", "pattFill", "blipFill", "grpFill"},
+            {"noAutofit", "normAutofit", "spAutoFit"},
+            {"effectLst", "effectDag"},
+            {"uLnTx", "uLn"},
+            {"uFillTx", "uFill"},
         )
-    blocks: list[RepeatBlock] = []
-    dynamic_ids: set[int] = set()
-    for (item_path, block_name), prototypes in grouped.items():
-        table_count = sum(1 for item in prototypes if item.shape.has_table)
-        if table_count == 0:
-            continue
-        if table_count > 1:
-            raise TemplateError(
-                f"block {block_name!r} must contain one table, found {table_count}"
-            )
-        block = RepeatBlock(
-            item_path,
-            block_name,
-            prototypes,
-            min(item.shape.left for item in prototypes),
-            min(item.shape.top for item in prototypes),
-            max(item.shape.left + item.shape.width for item in prototypes),
-            max(item.shape.top + item.shape.height for item in prototypes),
+        exclusive = next((group for group in choices if local in group), {local})
+        existing = next((x for x in result if x.tag == child.tag), None)
+        clone = (
+            _merge_properties(existing, child)
+            if local == "defRPr" and existing is not None
+            else deepcopy(child)
         )
-        _ = block.table_prototype
-        blocks.append(block)
-        dynamic_ids.update(item.shape.shape_id for item in prototypes)
-    blocks.sort(key=lambda block: (block.top, block.left))
-    return blocks, dynamic_ids
+        for old in list(result):
+            if old.tag.rsplit("}", 1)[-1] in exclusive:
+                result.remove(old)
+        result.append(clone)
+    kind = result.tag.rsplit("}", 1)[-1]
+    if kind in {"rPr", "defRPr", "endParaRPr"}:
+        order = (
+            "ln",
+            "noFill",
+            "solidFill",
+            "gradFill",
+            "blipFill",
+            "pattFill",
+            "grpFill",
+            "effectLst",
+            "effectDag",
+            "highlight",
+            "uLnTx",
+            "uLn",
+            "uFillTx",
+            "uFill",
+            "latin",
+            "ea",
+            "cs",
+            "sym",
+            "hlinkClick",
+            "hlinkMouseOver",
+            "rtl",
+            "extLst",
+        )
+    elif kind == "bodyPr":
+        order = (
+            "prstTxWarp",
+            "noAutofit",
+            "normAutofit",
+            "spAutoFit",
+            "scene3d",
+            "sp3d",
+            "flatTx",
+            "extLst",
+        )
+    else:
+        return result
+    for child in sorted(
+        list(result),
+        key=lambda node: (
+            order.index(node.tag.rsplit("}", 1)[-1])
+            if node.tag.rsplit("}", 1)[-1] in order
+            else len(order)
+        ),
+    ):
+        result.remove(child)
+        result.append(child)
+    return result
+
+
+def materialize_text_shape(shape: Any) -> Any:
+    """Bake the source placeholder inheritance before moving to a blank layout."""
+    clone = deepcopy(shape._element)
+    if not shape.has_text_frame:
+        return clone
+    slide = shape.part.slide
+    master = slide.slide_layout.slide_master
+    inherited = []
+    style_name = "otherStyle"
+    if shape.is_placeholder:
+        kind = str(shape.placeholder_format.type)
+        style_name = "titleStyle" if "TITLE" in kind else "bodyStyle"
+        layout_shape = slide.slide_layout.placeholders.get(shape.placeholder_format.idx)
+        master_shape = next(
+            (
+                s
+                for s in master.placeholders
+                if s.placeholder_format.type == shape.placeholder_format.type
+            ),
+            None,
+        )
+        inherited = [s for s in (master_shape, layout_shape) if s is not None and s.has_text_frame]
+    body = clone.find("{http://schemas.openxmlformats.org/presentationml/2006/main}txBody")
+    body_props = None
+    for ancestor in [*inherited, shape]:
+        body_props = _merge_properties(body_props, ancestor.text_frame._txBody.bodyPr)
+    body_props.tag = body.bodyPr.tag
+    body.replace(body.bodyPr, body_props)
+    for paragraph in body.p_lst:
+        level = int(paragraph.pPr.get("lvl", "0")) if paragraph.pPr is not None else 0
+        roots = master._element.xpath(f"./p:txStyles/p:{style_name}/a:lvl{level + 1}pPr")
+        effective = deepcopy(roots[0]) if roots else OxmlElement("a:pPr")
+        effective.tag = OxmlElement("a:pPr").tag
+        for ancestor in [*inherited, shape]:
+            frame = ancestor.text_frame._txBody
+            defaults = frame.xpath(f"./a:lstStyle/a:lvl{level + 1}pPr")
+            if defaults:
+                effective = _merge_properties(effective, defaults[0])
+            if ancestor is not shape:
+                matches = [
+                    p
+                    for p in frame.p_lst
+                    if (int(p.pPr.get("lvl", "0")) if p.pPr is not None else 0) == level
+                ]
+                if matches:
+                    effective = _merge_properties(effective, matches[0].pPr)
+        effective = _merge_properties(effective, paragraph.pPr)
+        order = (
+            "lnSpc",
+            "spcBef",
+            "spcAft",
+            "buClrTx",
+            "buClr",
+            "buSzTx",
+            "buSzPct",
+            "buSzPts",
+            "buFontTx",
+            "buFont",
+            "buNone",
+            "buAutoNum",
+            "buChar",
+            "buBlip",
+            "tabLst",
+            "defRPr",
+            "extLst",
+        )
+        for child in sorted(
+            list(effective),
+            key=lambda node: (
+                order.index(node.tag.rsplit("}", 1)[-1])
+                if node.tag.rsplit("}", 1)[-1] in order
+                else len(order)
+            ),
+        ):
+            effective.remove(child)
+            effective.append(child)
+        font_defaults = effective.find(
+            "{http://schemas.openxmlformats.org/drawingml/2006/main}defRPr"
+        )
+        for run in paragraph.xpath("./a:r|./a:fld"):
+            props = run.find("{http://schemas.openxmlformats.org/drawingml/2006/main}rPr")
+            merged = _merge_properties(font_defaults, props)
+            merged.tag = OxmlElement("a:rPr").tag
+            if props is not None:
+                run.remove(props)
+            run.insert(0, merged)
+        if paragraph.pPr is not None:
+            paragraph.remove(paragraph.pPr)
+        effective.set("lvl", str(level))
+        paragraph.insert(0, effective)
+    for ph in clone.xpath("./p:nvSpPr/p:nvPr/p:ph"):
+        ph.getparent().remove(ph)
+    return clone
 
 
 def remove_shape(shape: Any) -> None:
@@ -49,74 +187,47 @@ def remove_shape(shape: Any) -> None:
     element.getparent().remove(element)
 
 
-def _relationship_ids(element: Any) -> set[str]:
-    return {
-        value
-        for node in element.iter()
-        for value in node.attrib.values()
-        if isinstance(value, str) and value.startswith("rId")
-    }
-
-
 def _remap_relationships(element: Any, source_slide: Any, target_slide: Any) -> None:
-    mapping: dict[str, str] = {}
-    for old_rid in _relationship_ids(element):
-        if old_rid not in source_slide.part.rels:
-            continue
-        rel = source_slide.part.rels[old_rid]
-        if rel.reltype.endswith("/slideLayout") or rel.reltype.endswith("/notesSlide"):
-            continue
-        target = rel.target_ref if rel.is_external else rel.target_part
-        mapping[old_rid] = target_slide.part.relate_to(target, rel.reltype, rel.is_external)
+    namespace = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+    mapping = {}
+    for node in element.iter():
+        for attr, value in node.attrib.items():
+            if not attr.startswith(namespace) or value in mapping:
+                continue
+            if value not in source_slide.part.rels:
+                continue
+            relationship = source_slide.part.rels[value]
+            target = (
+                relationship.target_ref if relationship.is_external else relationship.target_part
+            )
+            mapping[value] = target_slide.part.relate_to(
+                target, relationship.reltype, relationship.is_external
+            )
     for node in element.iter():
         for attr, value in list(node.attrib.items()):
-            if value in mapping:
+            if attr.startswith(namespace) and value in mapping:
                 node.set(attr, mapping[value])
 
 
 def append_element(target_slide: Any, element: Any, source_slide: Any) -> Any:
     clone = deepcopy(element)
     _remap_relationships(clone, source_slide, target_slide)
-    c_nv_pr = clone.xpath(".//p:cNvPr")
-    next_shape_id = target_slide.shapes._next_shape_id
-    for offset, node in enumerate(c_nv_pr):
-        node.set("id", str(next_shape_id + offset))
+    next_id = target_slide.shapes._next_shape_id
+    for offset, node in enumerate(clone.xpath(".//p:cNvPr")):
+        node.set("id", str(next_id + offset))
     target_slide.shapes._spTree.insert_element_before(clone, "p:extLst")
     return target_slide.shapes[-1]
 
 
-def replace_shape_text(shape: Any, context: dict[str, Any]) -> None:
-    if not shape.has_text_frame:
-        return
-    replace_text_frame_expressions(shape.text_frame, context)
-
-
-def clone_static_slide(
-    presentation: Any,
-    source_slide: Any,
-    static_elements: Sequence[Any],
-    insert_after: Any,
-) -> Any:
-    target_slide = presentation.slides.add_slide(source_slide.slide_layout)
-    for shape in list(target_slide.shapes):
+def clone_blank_slide(presentation: Any, source_slide: Any, insert_after: Any) -> Any:
+    layouts = source_slide.slide_layout.slide_master.slide_layouts
+    blank = min(layouts, key=lambda layout: len(layout.placeholders))
+    target = presentation.slides.add_slide(blank)
+    for shape in list(target.shapes):
         remove_shape(shape)
-    for element in static_elements:
-        append_element(target_slide, element, source_slide)
-    slide_ids = presentation.slides._sldIdLst
-    new_id = slide_ids[-1]
-    slide_ids.remove(new_id)
-    source_index = next(
-        index for index, slide in enumerate(presentation.slides) if slide == insert_after
-    )
-    slide_ids.insert(source_index + 1, new_id)
-    return target_slide
-
-
-def remove_slide(presentation: Any, slide: Any) -> None:
-    slide_id_list = presentation.slides._sldIdLst
-    for slide_id in list(slide_id_list):
-        if presentation.part.related_part(slide_id.rId) is slide.part:
-            slide_id_list.remove(slide_id)
-            presentation.part.drop_rel(slide_id.rId)
-            return
-    raise TemplateError("could not remove an unused template slide")
+    ids = presentation.slides._sldIdLst
+    new_id = ids[-1]
+    ids.remove(new_id)
+    index = next(i for i, slide in enumerate(presentation.slides) if slide is insert_after)
+    ids.insert(index + 1, new_id)
+    return target

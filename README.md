@@ -4,13 +4,14 @@
 
 ## 已实现能力
 
-- 普通文字与静态表格单元格中的 `{{field}}` 插值，支持点路径并保留 run 样式。
+- 普通文字与静态表格单元格支持插值、行内 if 和整段 foreach；替换值保留第一个 `{` 的 run 样式。
 - 单图片替换，支持默认、`(x)`、`(y)`、`(x,y)` 四种尺寸模式。
 - 图片数组循环、图片与文字逻辑组循环，可选 `rows`、`cols`，自动网格和分页。
 - 原生 PowerPoint 表格循环，按照 `columns`、`rows` 自动增删行列并继承模板样式。
 - 多张短表优先排在同一页，下一张完整表放不下时整体换页，长表按行分页。
 - 长文本行高、列宽策略、宽表拆列、数字日期格式、空值和溢出策略。
-- 多个动态表格 block、独立动态区域、续页标题和唯一 Shape 名称。
+- 多个动态 block、独立动态区域、同母版空白续页和唯一 Shape 名称。
+- 所有原始模板页按页序独立展开，支持文字、多个表格和图片的混合组；续页使用同母版空白布局。
 - 空数组、空表和无效图片自动删除对应占位元素。
 - 模板预检、输入规模限制、本地图片访问限制及原子输出。
 
@@ -80,19 +81,21 @@ PYTHONPATH=src python -m genppt.cli \
 动态表格标题和表格 Shape 使用相同的 `item + block`：
 
 ```text
-<foreach item=tables block=reasonTable>{{title}}</foreach>
-<foreach item=tables block=reasonTable>{{name}}</foreach>
+<foreach item=tables block=reasonTable>分类标题</foreach>
+<foreach item=tables block=reasonTable>{{table1}}</foreach>
 ```
 
-第二个 Shape 必须是原生 PowerPoint table。每个表项只有 `columns` 和 `rows` 是固定字段：
+第二个 Shape 必须是原生 PowerPoint table；第一个 Shape 的实际文本写 `分类：{{title}}`。表格字段只有 `rows` 必需，`columns` 可省略并从第一行推导：
 
 ```json
 {
   "tables": [
     {
       "title": "资料不完整",
-      "columns": ["区域", "数量"],
-      "rows": [["华东", 12]]
+      "table1": {
+        "columns": [{"loc": "区域"}, {"count": "数量"}],
+        "rows": [{"loc": "华东", "count": 12}]
+      }
     }
   ]
 }
@@ -101,8 +104,8 @@ PYTHONPATH=src python -m genppt.cli \
 图片逻辑组同样通过相同的 `item + block` 关联；`rows`、`cols` 均为可选字段：
 
 ```text
-<foreach item=imageGroups block=equipment cols=3>{{title}}</foreach>
-<foreach item=imageGroups block=equipment>{{imagePath}}</foreach>(x,y)
+<foreach item=imageGroups block=equipment>设备标题</foreach>
+<foreach item=imageGroups block=equipment cols=3>{{images}}</foreach>（x，y）
 ```
 
 完整语法、数据协议、分页行为和生产约束见[完整方案与实现](docs/solution-and-implementation.md)。
@@ -111,13 +114,13 @@ PYTHONPATH=src python -m genppt.cli \
 
 | 模板元素 | 自动处理器 |
 |---|---|
-| 文本或静态表格单元格中的 `{{...}}` | 普通文字插值 |
+| 文本或静态表格单元格中的文本语法 | 插值、if、段落 foreach |
 | 图片 Shape 名称中的 `{{...}}` | 单图片替换 |
-| foreach block 包含图片且不包含表格 | 图片循环 |
-| foreach block 包含原生表格 | 动态表格 |
+| Shape foreach | 按类型展开文本、表格或图片 |
+| 相同 item + block | 同页混合组，统一布局和分页 |
 | 没有动态标记 | 原样复制 |
 
-同一模板页不能同时包含图片循环和表格循环，因为两者都有独立分页器；应放在不同模板页。普通单图片可以与动态表格同页。历史项目的 `if` 和纯文本 foreach 处理器未包含在当前仓库中，入口会明确拒绝未注册语法。
+同页支持混合组和多个独立循环。文本内容中的 foreach 必须包住整段，内部数组只能是对象数组。Shape 名称中的文本内容不解析表达式。使用 `page=group` 可以切换每组新起一页。循环缺失时保留原页，只删除动态元素。
 
 ## 项目结构
 
@@ -127,12 +130,13 @@ src/genppt/
 ├── config.py           # 策略与资源限制
 ├── data.py             # 表格数据校验与格式化
 ├── directives.py       # 模板指令解析
-├── image_renderer.py   # 图片替换、网格与分页
+├── flow_renderer.py    # 组内流式布局和统一分页
+├── image_renderer.py   # 图片验证、缓存与替换
 ├── planner.py          # 模板扫描与自动路由
 ├── pptx_utils.py       # PPTX 克隆兼容层
-├── service.py          # 统一生成入口与表格分页
+├── service.py          # 统一生成入口与原子输出
 ├── table_renderer.py   # 表格布局与样式复制
-└── text_renderer.py    # 普通文字插值
+└── text_renderer.py    # 带样式的插值、if 与段落循环
 
 tests/                  # 自动化测试和 PPTX fixture
 examples/               # 示例数据
@@ -145,11 +149,18 @@ docs/                   # 方案、协议、运维和审查文档
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-当前共有 55 项自动化测试，覆盖统一入口、普通文字、表格、图片、循环、分页、失败保护和资源限制。
+自动化测试覆盖统一入口、多模板页、混合组、文字语法、表格、图片、分页、失败保护和累计资源限制。端到端示例：
+
+```bash
+PYTHONPATH=src python examples/run_multipage_demo.py
+```
+
+结果生成到 `output/multipage-demo/generated.pptx`。用户原始模板不被修改。
 
 ## 文档
 
 - [完整方案与实现](docs/solution-and-implementation.md)
+- [实现计划与执行记录](docs/implementation-plan.md)
 - [统一入口与自动路由](docs/entry-routing.md)
 - [动态表格功能](docs/table-features.md)
 - [动态图片功能](docs/image-features.md)

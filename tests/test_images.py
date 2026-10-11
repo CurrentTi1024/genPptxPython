@@ -9,7 +9,6 @@ from pptx import Presentation
 from genppt import GeneratorConfig, TemplateError, generate_presentation
 from genppt.directives import parse_foreach, parse_single_image
 
-
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 IMAGES = FIXTURES / "images"
@@ -18,18 +17,13 @@ TEMPLATE = FIXTURES / "test-img.pptx"
 
 def _picture_shapes(presentation: Presentation):
     return [
-        shape
-        for slide in presentation.slides
-        for shape in slide.shapes
-        if shape.shape_type == 13
+        shape for slide in presentation.slides for shape in slide.shapes if shape.shape_type == 13
     ]
 
 
 def _single_image_template(path: Path, name: str) -> tuple[int, int]:
     presentation = Presentation(TEMPLATE)
-    picture = next(
-        shape for shape in presentation.slides[0].shapes if shape.shape_type == 13
-    )
+    picture = next(shape for shape in presentation.slides[0].shapes if shape.shape_type == 13)
     size = picture.width, picture.height
     picture.name = name
     presentation.save(path)
@@ -38,9 +32,7 @@ def _single_image_template(path: Path, name: str) -> tuple[int, int]:
 
 def _loop_template(path: Path, name: str) -> None:
     presentation = Presentation(TEMPLATE)
-    picture = next(
-        shape for shape in presentation.slides[0].shapes if shape.shape_type == 13
-    )
+    picture = next(shape for shape in presentation.slides[0].shapes if shape.shape_type == 13)
     picture.name = name
     presentation.save(path)
 
@@ -56,9 +48,7 @@ class DirectiveTest(unittest.TestCase):
     def test_rows_or_cols_can_be_set_independently(self) -> None:
         rows = parse_foreach("<foreach item=imgs rows=2></foreach>", 1)
         cols = parse_foreach("<foreach item=imgs cols=3></foreach>", 1)
-        both = parse_foreach(
-            "<foreach item=imgs rows=2 cols=3></foreach>(x, y)", 1
-        )
+        both = parse_foreach("<foreach item=imgs rows=2 cols=3></foreach>(x, y)", 1)
         self.assertEqual((rows.rows, rows.cols), (2, None))
         self.assertEqual((cols.rows, cols.cols), (None, 3))
         self.assertEqual((both.rows, both.cols, both.image_mode), (2, 3, "x,y"))
@@ -115,7 +105,7 @@ class SingleImageTest(unittest.TestCase):
 
 
 class ImageLoopTest(unittest.TestCase):
-    def test_image_and_table_loops_on_same_slide_are_rejected(self) -> None:
+    def test_image_and_table_loops_on_same_slide_can_coexist(self) -> None:
         with TemporaryDirectory() as directory:
             template = Path(directory) / "template.pptx"
             output = Path(directory) / "output.pptx"
@@ -124,12 +114,12 @@ class ImageLoopTest(unittest.TestCase):
             table = slide.shapes.add_table(2, 1, 0, 0, 1000000, 1000000)
             table.name = "<foreach item=tables block=tableBlock></foreach>"
             presentation.save(template)
-            with self.assertRaisesRegex(TemplateError, "cannot mix"):
-                generate_presentation(
-                    template,
-                    {"imgs": [], "imageGroups": [], "tables": []},
-                    output,
-                )
+            generate_presentation(
+                template,
+                {"imgs": [], "imageGroups": [], "tables": []},
+                output,
+            )
+            self.assertTrue(output.is_file())
 
     def test_empty_arrays_remove_loop_placeholders(self) -> None:
         with TemporaryDirectory() as directory:
@@ -171,8 +161,7 @@ class ImageLoopTest(unittest.TestCase):
             self.assertEqual(len(pictures), 3)
             self.assertTrue(
                 all(
-                    picture.left + picture.width <= presentation.slide_width
-                    for picture in pictures
+                    picture.left + picture.width <= presentation.slide_width for picture in pictures
                 )
             )
             self.assertTrue(
@@ -251,7 +240,7 @@ class ImageLoopTest(unittest.TestCase):
                 if pictures:
                     self.assertEqual(len({picture.left for picture in pictures}), 1)
 
-    def test_group_loop_replaces_text_and_skips_invalid_whole_group(self) -> None:
+    def test_group_loop_replaces_text_and_skips_only_invalid_picture(self) -> None:
         with TemporaryDirectory() as directory:
             output = Path(directory) / "output.pptx"
             generate_presentation(
@@ -275,34 +264,38 @@ class ImageLoopTest(unittest.TestCase):
             )
             self.assertIn("分类：有效 A", text)
             self.assertIn("分类：有效 B", text)
-            self.assertNotIn("分类：无效", text)
+            self.assertIn("分类：无效", text)
             self.assertEqual(len(_picture_shapes(presentation)), 2)
 
     def test_image_limit_is_enforced(self) -> None:
-        with TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(TemplateError, "image count exceeds"):
-                generate_presentation(
-                    TEMPLATE,
-                    {
-                        "imgs": [str(IMAGES / "square.png")] * 2,
-                        "imageGroups": [],
-                    },
-                    Path(directory) / "output.pptx",
-                    config=GeneratorConfig(max_images=1),
-                )
+        with (
+            TemporaryDirectory() as directory,
+            self.assertRaisesRegex(TemplateError, "image count exceeds"),
+        ):
+            generate_presentation(
+                TEMPLATE,
+                {
+                    "imgs": [str(IMAGES / "square.png")] * 2,
+                    "imageGroups": [],
+                },
+                Path(directory) / "output.pptx",
+                config=GeneratorConfig(max_images=1),
+            )
 
     def test_total_image_bytes_limit_is_enforced(self) -> None:
-        with TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(TemplateError, "total image bytes exceed"):
-                generate_presentation(
-                    TEMPLATE,
-                    {
-                        "imgs": [str(IMAGES / "square.png")],
-                        "imageGroups": [],
-                    },
-                    Path(directory) / "output.pptx",
-                    config=GeneratorConfig(max_total_image_bytes=1),
-                )
+        with (
+            TemporaryDirectory() as directory,
+            self.assertRaisesRegex(TemplateError, "total image bytes exceed"),
+        ):
+            generate_presentation(
+                TEMPLATE,
+                {
+                    "imgs": [str(IMAGES / "square.png")],
+                    "imageGroups": [],
+                },
+                Path(directory) / "output.pptx",
+                config=GeneratorConfig(max_total_image_bytes=1),
+            )
 
     def test_allowed_image_roots_remove_out_of_scope_images(self) -> None:
         with TemporaryDirectory() as directory:
@@ -343,9 +336,7 @@ class ImageLoopTest(unittest.TestCase):
             output = Path(directory) / "output.pptx"
             presentation = Presentation(TEMPLATE)
             picture = next(
-                shape
-                for shape in presentation.slides[0].shapes
-                if shape.shape_type == 13
+                shape for shape in presentation.slides[0].shapes if shape.shape_type == 13
             )
             picture.rotation = 15
             presentation.save(template)
@@ -367,9 +358,7 @@ class ImageLoopTest(unittest.TestCase):
                 str(IMAGES / "square.png"), 0, 0, width=200_000, height=200_000
             )
             logo.name = "{{logo}}(x,y)"
-            title = presentation.slides[0].shapes.add_textbox(
-                300_000, 0, 2_000_000, 300_000
-            )
+            title = presentation.slides[0].shapes.add_textbox(300_000, 0, 2_000_000, 300_000)
             title.text = "报告：{{reportTitle}}"
             presentation.save(template)
             generate_presentation(
@@ -389,23 +378,18 @@ class ImageLoopTest(unittest.TestCase):
             )
             generated = Presentation(output)
             self.assertTrue(
+                any(shape.has_table for slide in generated.slides for shape in slide.shapes)
+            )
+            self.assertTrue(
                 any(
-                    shape.has_table
+                    shape.name.startswith("logo__image_")
                     for slide in generated.slides
                     for shape in slide.shapes
                 )
             )
             self.assertTrue(
                 any(
-                    shape.name == "logo__image"
-                    for slide in generated.slides
-                    for shape in slide.shapes
-                )
-            )
-            self.assertTrue(
-                any(
-                    getattr(shape, "has_text_frame", False)
-                    and "报告：统一入口" in shape.text
+                    getattr(shape, "has_text_frame", False) and "报告：统一入口" in shape.text
                     for slide in generated.slides
                     for shape in slide.shapes
                 )

@@ -7,8 +7,8 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from .config import GeneratorConfig
-from .errors import TemplateError
+from ..core.config import GeneratorConfig
+from ..core.errors import TemplateError
 from .models import ColumnSpec, NormalizedTable, TableOptions
 
 
@@ -21,8 +21,12 @@ def _display_value(
 ) -> str:
     if isinstance(value, Decimal) and not value.is_finite():
         raise TemplateError("NaN and infinite cell values are not supported")
-    if format_spec and any(int(n) > max_length for n in re.findall(r"\d+", format_spec)):
-        raise TemplateError("format width/precision exceeds cell text limit")
+    if format_spec:
+        for number in re.findall(r"\d+", format_spec):
+            number = number.lstrip("0") or "0"
+            limit = str(max_length)
+            if len(number) > len(limit) or len(number) == len(limit) and number > limit:
+                raise TemplateError("format width/precision exceeds cell text limit")
     if value is None:
         result = null_value
     elif isinstance(value, (str, int, bool, Decimal, date, datetime)):
@@ -127,8 +131,6 @@ def normalize_table(item: Mapping[str, Any], config: GeneratorConfig) -> Normali
         raise TemplateError("columns must be a non-empty array")
     if len(columns) > config.max_columns:
         raise TemplateError(f"column count exceeds configured limit {config.max_columns}")
-    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
-        raise TemplateError("rows must be an array")
     if len(rows) > config.max_rows_per_table:
         raise TemplateError(f"row count exceeds configured limit {config.max_rows_per_table}")
 

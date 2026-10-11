@@ -7,9 +7,9 @@ from tempfile import TemporaryDirectory
 from pptx import Presentation
 
 from genppt import GeneratorConfig, TemplateError, generate_presentation
-from genppt.directives import parse_foreach, parse_single_image
+from genppt.engine.directives import parse_foreach, parse_single_image
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests" / "fixtures"
 IMAGES = FIXTURES / "images"
 TEMPLATE = FIXTURES / "test-img.pptx"

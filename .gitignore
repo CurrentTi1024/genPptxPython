@@ -1,6 +1,11 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
+var/
+.env
+.env.*
+!.env.example
 .venv/
 .DS_Store
 ~$*.pptx

@@ -11,10 +11,11 @@ from pptx.oxml.xmlchemy import OxmlElement
 from pptx.util import Inches, Pt
 
 from genppt import GeneratorConfig, TemplateError, generate_presentation
-from genppt.data import normalize_table
-from genppt.directives import parse_foreach, parse_single_image
+from genppt.engine.data import normalize_table
+from genppt.engine.directives import parse_foreach, parse_single_image
 
-IMAGE = Path(__file__).parent / "fixtures/images/square.png"
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
+IMAGE = FIXTURES / "images/square.png"
 
 
 def deck():
@@ -58,8 +59,38 @@ def all_tables(p):
 
 
 class V04Test(unittest.TestCase):
+    def test_missing_explicit_table_field_does_not_use_unrelated_outer_rows(self):
+        p = deck()
+        slide = p.slides.add_slide(p.slide_layouts[6])
+        table(slide, field="table1")
+        result = self.generate(p, {"items": [{"rows": [{"A": "unrelated"}]}]})
+        self.assertEqual(all_tables(result), [])
+
+    def test_long_format_width_is_rejected_without_integer_conversion_failure(self):
+        with self.assertRaisesRegex(TemplateError, "format width"):
+            normalize_table(
+                {"rows": [{"A": 1}], "_table": {"formats": {"A": "9" * 5000 + "d"}}},
+                GeneratorConfig(),
+            )
+
+    def test_field_next_to_interpolation_keeps_dynamic_field_type(self):
+        p = deck()
+        slide = p.slides.add_slide(p.slide_layouts[6])
+        shape = text(slide, "{{title}} page ")
+        field = OxmlElement("a:fld")
+        field.set("id", "{C5E94150-5D98-4A37-91EE-880BD5BDECE1}")
+        field.set("type", "slidenum")
+        value = OxmlElement("a:t")
+        value.text = "1"
+        field.append(value)
+        shape.text_frame.paragraphs[0]._p.append(field)
+        result = self.generate(p, {"title": "Report"})
+        paragraph = result.slides[0].shapes[0].text_frame.paragraphs[0]
+        self.assertEqual(len(paragraph._p.xpath("./a:fld")), 1)
+        self.assertEqual(paragraph._p.xpath("./a:fld")[0].get("type"), "slidenum")
+
     def test_inherited_style_merge_obeys_exclusive_choices_and_schema_order(self):
-        from genppt.pptx_utils import _merge_properties
+        from genppt.engine.pptx_utils import _merge_properties
 
         base, overlay = OxmlElement("a:rPr"), OxmlElement("a:rPr")
         base.append(OxmlElement("a:latin"))
@@ -213,7 +244,7 @@ class V04Test(unittest.TestCase):
     def test_real_template_end_to_end_data_and_page_order(self):
         from examples.run_multipage_demo import demo_payload
 
-        p = Presentation(Path(__file__).parent / "fixtures/test-multipage.pptx")
+        p = Presentation(FIXTURES / "test-multipage.pptx")
         result = self.generate(p, demo_payload())
         self.assertEqual(len(result.slides), 6)
         native = all_tables(result)
@@ -234,7 +265,7 @@ class V04Test(unittest.TestCase):
         self.assertEqual(rows, [str(i) for i in range(1, 26)])
 
     def test_effective_placeholder_style_is_identical_on_blank_continuation(self):
-        p = Presentation(Path(__file__).parent / "fixtures/test-multipage.pptx")
+        p = Presentation(FIXTURES / "test-multipage.pptx")
         result = self.generate(p, {"tables": [{"title": "A"}, {"title": "B"}, {"title": "C"}]})
         # Force separate pages without altering the shared source template.
         caption = next(s for s in p.slides[1].shapes if s.has_text_frame and "foreach" in s.name)

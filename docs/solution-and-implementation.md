@@ -1,6 +1,6 @@
 # PPT 模板语法与功能设计（v0.4）
 
-本文是当前实现的需求契约。适用于单次生成入口 `generate_presentation(template_path, data, output_path, config=...)`。SQL 与业务计算仍由 Dify 完成。
+本文是当前模板语法的需求契约。v0.5 业务入口为 `generate_ppt(template, data_json_string) -> str`，支持路径/文件流；旧底层 `generate_presentation(template_path, data_object, output_path, config=...)` 保留。HTTP 协议与输入安全见[入口说明](entry-routing.md)。SQL 与业务计算仍由 Dify 完成。
 
 ## 1. 页面与循环作用域
 
@@ -18,7 +18,7 @@
 <foreach item=数组路径 block=自定义组名 page=group>内容</foreach>
 ```
 
-`item` 必填，支持点路径；`block` 可选；`page` 可选，默认 flow（尽量同页），group 表示每个外层数据项新起一页。首个数据项使用原页，空项不产生额外页。参数在组内必须一致，可只声明在一个成员上。
+`item` 必填，支持点路径；路径以英文字母或下划线开始，后续为字母/数字/下划线，各级用点分隔。`block` 可选；`page` 可选，默认 flow（尽量同页），group 表示每个外层数据项新起一页。首个数据项使用原页，空项不产生额外页。参数在组内必须一致，可只声明在一个成员上。
 
 | Shape | 内容含义 |
 |---|---|

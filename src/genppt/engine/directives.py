@@ -5,7 +5,7 @@ import shlex
 from collections.abc import Mapping
 from typing import Any
 
-from .errors import TemplateError
+from ..core.errors import TemplateError
 from .models import ForeachDirective
 
 FOREACH_RE = re.compile(

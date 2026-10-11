@@ -10,11 +10,11 @@ from pptx import Presentation
 from pptx.util import Inches
 
 from genppt.config import GeneratorConfig
-from genppt.data import normalize_table
+from genppt.engine.data import normalize_table
 from genppt.errors import TemplateError
 from genppt.service import generate_presentation
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests" / "fixtures"
 CONFIG = GeneratorConfig()
 

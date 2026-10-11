@@ -4,8 +4,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
+from ..core.errors import TemplateError
 from .directives import EXPRESSION_RE, parse_foreach, parse_single_image
-from .errors import TemplateError
 from .models import ForeachDirective, ShapePrototype
 from .text_renderer import validate_text_frame
 

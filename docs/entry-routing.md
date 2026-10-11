@@ -1,49 +1,49 @@
-# 统一入口与自动路由（v0.4）
+# 两参数入口与 HTTP 协议（v0.5）
 
-完整契约见[语法与功能设计](solution-and-implementation.md)。
+## 业务契约
 
 ```python
-from genppt import GeneratorConfig, generate_presentation
+from genppt import generate_ppt
 
-result = generate_presentation(
-    template_path="/srv/templates/report.pptx",
-    data=payload,
-    output_path="/srv/output/report.pptx",
-    config=GeneratorConfig(
-        continuation_top_margin_inches=0.55,
-        allowed_image_roots=("/srv/uploads",),
-    ),
-)
+output_path: str = generate_ppt(template, data)
 ```
 
-## 页级计划
+只有两个参数：
 
-一次加载模板，先快照全部原始页并校验语法。每页产生独立 PagePlan，包含当前页的 block、Shape 原型和原始页序号。生成续页不会再次扫描。
+1. template：本地 str/Path，或 bytes/同步二进制流。可 seek 流从开头读并恢复位置；非 seek 流从当前位置读；不关闭 caller stream。
+2. data：JSON 字符串，解码后的根必须为对象。禁止重复字段、NaN/Infinity、非法 XML 字符、超深/过大数据。
 
-| 元素 | 处理 |
+返回已有生成文件的绝对服务器路径 str。输出根目录和资源限制由 Settings 决定；每次 UUID 文件名，失败不返回路径、不留下半成品。数据格式错误在读取模板前失败。
+
+`PresentationService(settings).generate(template, data)` 用于依赖注入。`generate_ppt` 使用环境变量创建 Settings。旧三参数 generate_presentation 保留用于指定输出的 CLI/历史库调用。
+
+## HTTP
+
+`POST /api/v1/presentations` 使用同一路径支持两种 content type：
+
+| 模式 | template | data |
+|---|---|---|
+| application/json | 服务端路径字符串，必须在模板允许目录内 | JSON 字符串，不是 JSON 对象 |
+| multipart/form-data | 单个上传文件 | 表单字符串，内容为 JSON 对象 |
+
+严格只接收这两个字段。响应 200 为 JSON 字符串路径，例如 `"/srv/generated/UUID.pptx"`。不提供文件下载地址，不把服务器路径当作客户端可访问文件。
+
+状态码：400 格式损坏的 multipart 或表单超限；403 模板目录越界；413 请求体/上传文件超限；415 content type 不支持；422 模板/数据/参数非法；503 并发已满（Retry-After）；500 内部存储/未知故障，响应不暴露堆栈。
+
+输入解析和请求大小限制采用受维护的框架实现。文件使用 multipart，解析后异步路由在线程池调用同步生成服务；上传上下文在工作完成或报错后关闭，上传名称不参与输出路径。参考 [FastAPI 文件接收](https://fastapi.tiangolo.com/tutorial/request-files/) 和 [Starlette 请求限制](https://www.starlette.io/requests/)。
+
+## 自动识别
+
+| 模板元素 | 处理 |
 |---|---|
-| 无名称指令的普通文本 | 根 data 的插值、if、段落 foreach |
-| 普通图片名称 {{path}} | 根 data 的单图片替换 |
-| 带 foreach 的文本 | 当前外层对象的文本模板 |
-| 带 foreach 的 table | 当前表项或选择器指定的表格对象/数组 |
-| 带 foreach 的图片 | 当前路径或选择器指定的路径/数组 |
-| 无动态内容 | 保留原页元素 |
+| 普通文本/静态表格单元格的内容标签 | 根 data 插值、if、整段 foreach |
+| 图片名称 {{path}} | 根 data 单图替换 |
+| 文本 Shape foreach | 当前对象的实际文本内容；名称正文按字面量 |
+| 原生 table foreach | 当前表项或字段选择器的对象/数组 |
+| 图片 foreach | 当前路径或字段选择器的路径/数组 |
+| 显式同页相同 item + block | 同项混合布局、统一分页 |
+| 无动态标记 | 原页保留 |
 
-相同 item + block 仅在同页关联。不带 block 的每个 Shape 独立。同页可以混排文字、图片和多个表格。
+一次加载，编译所有原页，处理静态内容，然后逐页展开、一次原子保存。缺失表格字段隐藏自身，不误取无关外层 rows。兼容旧“当前表项 + 名称字段”形式：当前项含 rows 且名称字段为标量时，读取当前表项；新模板建议明确使用 {{table1}}。
 
-## 执行顺序
-
-1. 校验路径、根数据和页数。
-2. 编译所有原页及其文本语法。
-3. 处理未被循环接管的静态单元格、组合对象内文字和单图片。
-4. 按原页顺序展开 block，渲染文本、规范化表格、校验图片。
-5. 统一计算组内横排与纵向流动，生成原页内容和同母版空白续页。
-6. 一次原子保存。
-
-插值后产生的业务文本不再解析。替换值继承占位符第一个左花括号的样式。占位符从原布局继承的有效样式先实体化，防止续页改用空白布局后样式变化。
-
-## 失败保护
-
-语法错误、非法数据、无法容纳的单行/段落、资源超限均返回 TemplateError。临时输出和最终目标在同一目录，成功后原子替换；失败保留既有文件。
-
-旧 allow_additional_template_slides 及 repeat_non_table_shapes_on_continuation 配置保留调用兼容，但不再改变页面行为。所有原页始终处理，组标题不在续页重复。
+详细模板语法见[完整设计](solution-and-implementation.md)。

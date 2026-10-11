@@ -7,10 +7,10 @@ from typing import Any
 
 from pptx.text.text import _Paragraph
 
-from .config import GeneratorConfig
+from ..core.config import GeneratorConfig
+from ..core.errors import TemplateError
 from .data import normalize_table
 from .directives import optional_path, select_value
-from .errors import TemplateError
 from .image_renderer import ImageCache, _picture_size, _replace_picture, _validate_image
 from .models import ShapePrototype
 from .planner import PageBlock, PagePlan
@@ -252,6 +252,10 @@ def _prepare_group(
                 if (
                     isinstance(context, Mapping)
                     and "rows" in context
+                    and (
+                        table_data is not None
+                        or prototype.directive.body in {"{{tableName}}", "{{title}}"}
+                    )
                     and not isinstance(table_data, (Mapping, list))
                 ):
                     table_data = context
@@ -270,7 +274,7 @@ def _prepare_group(
                     prototype,
                     select_value(prototype.directive.body, context),
                     lane_right,
-                    full_height,
+                    full_height - (shape.top - top),
                     resources,
                     cache,
                 )
@@ -357,7 +361,11 @@ def _layout_lane(
                 if start < len(unit.payload.rows):
                     next_page()
         elif unit.kind == "text":
-            shape = unit.prototype.shape
+            from pptx.shapes.autoshape import Shape
+
+            # Fragment measurement must use the same materialized inheritance
+            # as the rendered text, not the placeholder's original layout defaults.
+            shape = Shape(unit.payload, unit.prototype.shape._parent)
             body = unit.payload.find(
                 "{http://schemas.openxmlformats.org/presentationml/2006/main}txBody"
             )

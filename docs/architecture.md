@@ -1,39 +1,46 @@
-# 系统架构（v0.4）
+# 系统架构与目录（v0.5）
 
-## 分层与职责
+## 分层
 
-| 模块 | 职责 |
-|---|---|
-| service.py | 一次加载、调用流程、原子保存 |
-| planner.py | 原页快照、语法校验、同页 block 关联及区域检查 |
-| directives.py | Shape foreach、图片尺寸后缀和数据路径 |
-| text_renderer.py | 插值、if、段落 foreach、run 样式和文本高度 |
-| flow_renderer.py | 组内成员展开、横排、整组保持、跨页布局和累计资源 |
-| data.py | 简写列映射、第一行推导、格式化和输入限制 |
-| table_renderer.py | 列宽、行高、拆列、原生表格样式 |
-| image_renderer.py | 本地路径校验、图片快照、EXIF、缓存和替换 |
-| pptx_utils.py | Shape/关系复制、占位符继承实体化、同母版空白页 |
-| config.py | 布局配置和资源上限 |
+| 层 | 目录/入口 | 职责 |
+|---|---|---|
+| HTTP | main.py、api/ | ASGI 工厂、路由、协议校验、路径访问、错误响应、并发准入 |
+| 配置 | core/ | GeneratorConfig、部署 Settings、业务异常 |
+| 应用 | services/presentation.py | 两参数入口、严格 JSON 校验、唯一输出路径 |
+| 引擎 | engine/ | 有界模板加载、原页计划、流式布局、文字/图片/表格原生渲染和原子保存 |
+| 适配 | cli.py、旧公开入口 | 保留已有调用方式，转发到同一引擎 |
 
-图片和表格不再分别拥有分页器。flow_renderer 统一管理每组的元素顺序和分页，因此可以让长表结束后继续输出图片。
+引擎不依赖 FastAPI，API 不实现 PPT 排版。services 和 engine 均不 import HTTP 框架，可在后台任务/现有 Dify HTTP 适配器中复用。没有数据库需求，不创建空 repository/DAO 目录。
 
-## 数据流
+## 引擎职责
+
+- package.py：路径/bytes/流的有界读取和 ZIP/PPTX 校验，恢复 caller stream 位置。
+- generation.py：一次加载、统筹生成和原子保存。
+- planner.py/directives.py：原页快照、语法、同页 block、区域。
+- flow_renderer.py：组内 Unit/Band、整组保持、Placement、统一分页和累计资源。
+- text_renderer.py：样式插值、if、段落循环、文字测量。
+- data.py/table_renderer.py：表结构、格式化、列宽、行高、原生表格。
+- image_renderer.py：受控图片读取、字节缓存、EXIF 与替换。
+- pptx_utils.py/models.py：克隆兼容层及结构类型。
+
+## 请求流程
 
 ```text
-CLI / HTTP adapter
-    → generate_presentation
-    → 原页 PagePlan[]
-    → 每页 PageBlock[]
-    → 每项 Band[] / Unit[]
-    → Placement[]（页序号、位置、表格行片段或文本段落）
-    → 原生 PPTX Shape
-    → 原子保存
+HTTP 准入及请求大小检查
+    → 路径/上传 + data 字符串
+    → PresentationService.generate(template, data)
+    → JSON 校验 + UUID 输出名
+    → 有界加载 + PagePlan[]
+    → Band[] / Unit[] → Placement[]
+    → 原生 PPTX → 原子保存 → 绝对路径字符串
 ```
 
-原页排序、逻辑组数据和渲染副作用分离。横排中的不同成员共享页序号，整排可容纳时整体换页。多 block 在原页使用独立区域，各自的续页连续插入原页之后。
+普通文字、图片、表格和循环全部由现有模板语法识别。生成页不参与第二次扫描。所有缓存和预算在单次请求内创建，不共享可变 Presentation 或图片对象。
 
-所有请求状态局部创建。图片读取一次后按规范路径缓存字节快照，后续生成不重复解码或读取可能已变化的文件。共享模板不被修改。
+HTTP 生成任务在线程池执行以避免阻塞事件循环，准入上限在读取请求体前生效。CPU 高负载部署多 worker/进程并限制总体并发；不使用“异步包装”冒充可取消的 CPU 任务。
 
-## 私有接口边界
+## 兼容与测试
 
-python-pptx 缺少公开的完整幻灯片克隆和格式继承 API。受控底层操作集中在 pptx_utils、text_renderer、table_renderer，须结合包完整性和视觉回归。项目依赖 python-pptx>=1.0,<2.0。
+保留 genppt 顶层公开 API、genppt.config、genppt.errors、genppt.service 和 genppt.generator 转发。旧内部模块搬到 genppt.engine；直接使用内部导入的调用方应更新导入路径。unit/ 与 integration/ 都通过 unittest discover 或 pytest 发现，fixtures 路径与测试模块位置解耦。
+
+python-pptx 私有接口集中用于原生格式复制，升级需完整包/几何/逐页渲染回归。

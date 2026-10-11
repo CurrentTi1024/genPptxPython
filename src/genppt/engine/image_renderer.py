@@ -8,9 +8,9 @@ from typing import Any
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from .config import GeneratorConfig
+from ..core.config import GeneratorConfig
+from ..core.errors import TemplateError
 from .directives import optional_path, parse_single_image
-from .errors import TemplateError
 from .pptx_utils import remove_shape
 
 

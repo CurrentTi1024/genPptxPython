@@ -9,7 +9,7 @@ from typing import Any
 
 from pptx.util import Inches, Pt
 
-from .errors import TemplateError
+from ..core.errors import TemplateError
 from .models import NormalizedTable, ShapePrototype
 
 

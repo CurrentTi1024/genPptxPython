@@ -1,170 +1,122 @@
 # genPptxPython
 
-基于 `python-pptx` 的模板驱动 PowerPoint 生成服务。调用方只需提供 PPTX 模板本地路径和数据对象，生成器会自动识别普通文字、图片、图片循环和动态表格，并尽量保留模板中的企业样式。
+模板驱动的 PowerPoint HTTP 后端，基于 FastAPI 和 python-pptx。两个业务参数：模板路径或二进制文件流、data JSON 字符串。返回生成 PPTX 的绝对本地路径。
 
-## 已实现能力
+## 安装和启动
 
-- 普通文字与静态表格单元格支持插值、行内 if 和整段 foreach；替换值保留第一个 `{` 的 run 样式。
-- 单图片替换，支持默认、`(x)`、`(y)`、`(x,y)` 四种尺寸模式。
-- 图片数组循环、图片与文字逻辑组循环，可选 `rows`、`cols`，自动网格和分页。
-- 原生 PowerPoint 表格循环，按照 `columns`、`rows` 自动增删行列并继承模板样式。
-- 多张短表优先排在同一页，下一张完整表放不下时整体换页，长表按行分页。
-- 长文本行高、列宽策略、宽表拆列、数字日期格式、空值和溢出策略。
-- 多个动态 block、独立动态区域、同母版空白续页和唯一 Shape 名称。
-- 所有原始模板页按页序独立展开，支持文字、多个表格和图片的混合组；续页使用同母版空白布局。
-- 空数组、空表和无效图片自动删除对应占位元素。
-- 模板预检、输入规模限制、本地图片访问限制及原子输出。
-
-## 安装
+Python 3.10+：
 
 ```bash
-python -m pip install -e .
+python -m pip install -e '.[dev]'
+GENPPT_TEMPLATE_ROOTS=/srv/templates \
+GENPPT_IMAGE_ROOTS=/srv/assets \
+GENPPT_OUTPUT_DIR=/srv/generated \
+uvicorn genppt.main:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
-要求 Python 3.10 及以上。主要依赖为 `python-pptx>=1.0,<2.0` 和 `Pillow>=10,<13`。
+交互式接口文档 `/docs`；健康检查 `/health`。生产鉴权、TLS、请求超时和限流由网关提供，服务默认仅监听本机。
 
-## Python 入口
+## 两参数 Python 入口
 
 ```python
-from genppt import GeneratorConfig, generate_presentation
+from genppt import generate_ppt
 
-result = generate_presentation(
-    template_path="/srv/templates/report.pptx",
-    data=payload,
-    output_path="/srv/output/report.pptx",
-    config=GeneratorConfig(
-        allowed_image_roots=("/srv/uploads", "/srv/assets"),
-    ),
-)
+path = generate_ppt("/srv/templates/report.pptx", '{"tables": []}')
+with open("/srv/templates/report.pptx", "rb") as template:
+    path = generate_ppt(template, '{"tables": []}')
 ```
 
-统一入口只加载一次 PPTX。调用方无需声明模板中有哪些元素，生成器会根据 Shape 类型、Shape 名称和 foreach block 自动路由。
+也支持 `Path`、`bytes` 和 `BytesIO`。同步可 seek 的流从开头读取，之后恢复原位置；不关闭调用方的流。非 seek 流从当前位置消费。不支持异步 read 方法，FastAPI 的 UploadFile 使用其 `.file`。
 
-## CLI
+输出目录等配置不属于业务参数。需要程序化配置时：
+
+```python
+from pathlib import Path
+from genppt import GeneratorConfig, PresentationService
+from genppt.core.settings import Settings
+
+service = PresentationService(Settings(
+    output_dir=Path("/srv/generated"),
+    generator=GeneratorConfig(allowed_image_roots=("/srv/assets",)),
+))
+path = service.generate(template, data_json_string)
+```
+
+每次生成使用独立 UUID 文件名，成功后原子保存，不覆盖模板。旧 `generate_presentation(template_path, data_object, output_path, config=...)` 和 CLI 继续兼容。
+
+## HTTP 接口
+
+`POST /api/v1/presentations`，只接受 `template`、`data` 两个字段。响应是 JSON 字符串，例如 `"/srv/generated/0123....pptx"`，不是文件下载或客户端路径。
+
+路径模式，Content-Type 为 application/json：
 
 ```bash
-genppt TEMPLATE.pptx DATA.json OUTPUT.pptx
+curl --noproxy '*' http://127.0.0.1:8000/api/v1/presentations \
+  -H 'Content-Type: application/json' \
+  -d '{"template":"/srv/templates/report.pptx","data":"{\"tables\":[]}"}'
 ```
 
-未安装包时：
+上传模式，Content-Type 为 multipart/form-data：
 
 ```bash
-PYTHONPATH=src python -m genppt.cli \
-  tests/fixtures/test2.pptx \
-  examples/test_data.json \
-  output/test2-generated.pptx
+curl --noproxy '*' http://127.0.0.1:8000/api/v1/presentations \
+  -F 'template=@/local/report.pptx' \
+  -F 'data={"tables":[]}'
 ```
 
-图片示例：
+HTTP 路径必须在 `GENPPT_TEMPLATE_ROOTS` 内。文件上传不用服务端模板路径，上传文件名不参与输出路径。`data` 必须是 JSON 对象的字符串，不接受对象、数组或额外 output 参数。
 
-```bash
-PYTHONPATH=src python -m genppt.cli \
-  tests/fixtures/test-img.pptx \
-  examples/image_data.json \
-  output/test-img-generated.pptx
-```
+## 模板功能
 
-## 最小模板协议
+- 所有原始模板页依次独立展开，静态页保留，续页紧跟原页。
+- 文本内容：`{{field}}`、行内 `<if field>...</if>`、对象数组的整段 `<foreach items=details>...</foreach>`。
+- 每个插值 value 继承第一个 `{` 的完整样式，不二次解释业务数据。
+- Shape 名称：`<foreach item=reports block=report>名称或选择器</foreach>`；不填 block 时独立，显式同页相同 item + block 时组成混合组。
+- 表格 `{{table1}}` 选择单表或表数组；rows 固定，columns 可从第一行推导；原生表格自动调整行列，继承模板样式。
+- 图片 `{{images}}` 选择单路径或路径数组；rows/cols 各自可选；x/y/xy 后缀支持中文括号、逗号。
+- 尽量同页放多组，完整下一组不足时新页；`page=group` 每项新页；长表按行拆页重复表头，后方图片在表格结束后输出。
+- 同母版空白续页，不重复普通标题或组标题。空/缺失成员只删除自身，全部循环为空保留原页固定元素。
+- 行高、列宽、拆列、格式化、空值与溢出策略保留。
 
-普通文字写在 Shape 文本中：
-
-```text
-报告名称：{{report.title}}
-```
-
-单图片写在图片 Shape 名称中：
-
-```text
-{{imagePath}}(x)
-```
-
-动态表格标题和表格 Shape 使用相同的 `item + block`：
-
-```text
-<foreach item=tables block=reasonTable>分类标题</foreach>
-<foreach item=tables block=reasonTable>{{table1}}</foreach>
-```
-
-第二个 Shape 必须是原生 PowerPoint table；第一个 Shape 的实际文本写 `分类：{{title}}`。表格字段只有 `rows` 必需，`columns` 可省略并从第一行推导：
-
-```json
-{
-  "tables": [
-    {
-      "title": "资料不完整",
-      "table1": {
-        "columns": [{"loc": "区域"}, {"count": "数量"}],
-        "rows": [{"loc": "华东", "count": 12}]
-      }
-    }
-  ]
-}
-```
-
-图片逻辑组同样通过相同的 `item + block` 关联；`rows`、`cols` 均为可选字段：
-
-```text
-<foreach item=imageGroups block=equipment>设备标题</foreach>
-<foreach item=imageGroups block=equipment cols=3>{{images}}</foreach>（x，y）
-```
-
-完整语法、数据协议、分页行为和生产约束见[完整方案与实现](docs/solution-and-implementation.md)。
-
-## 自动路由与限制
-
-| 模板元素 | 自动处理器 |
-|---|---|
-| 文本或静态表格单元格中的文本语法 | 插值、if、段落 foreach |
-| 图片 Shape 名称中的 `{{...}}` | 单图片替换 |
-| Shape foreach | 按类型展开文本、表格或图片 |
-| 相同 item + block | 同页混合组，统一布局和分页 |
-| 没有动态标记 | 原样复制 |
-
-同页支持混合组和多个独立循环。文本内容中的 foreach 必须包住整段，内部数组只能是对象数组。Shape 名称中的文本内容不解析表达式。使用 `page=group` 可以切换每组新起一页。循环缺失时保留原页，只删除动态元素。
+完整语法和限制见[语法与功能文档](docs/solution-and-implementation.md)。
 
 ## 项目结构
 
 ```text
 src/genppt/
-├── cli.py              # CLI 入口
-├── config.py           # 策略与资源限制
-├── data.py             # 表格数据校验与格式化
-├── directives.py       # 模板指令解析
-├── flow_renderer.py    # 组内流式布局和统一分页
-├── image_renderer.py   # 图片验证、缓存与替换
-├── planner.py          # 模板扫描与自动路由
-├── pptx_utils.py       # PPTX 克隆兼容层
-├── service.py          # 统一生成入口与原子输出
-├── table_renderer.py   # 表格布局与样式复制
-└── text_renderer.py    # 带样式的插值、if 与段落循环
-
-tests/                  # 自动化测试和 PPTX fixture
-examples/               # 示例数据
-docs/                   # 方案、协议、运维和审查文档
+├── main.py              # ASGI 工厂与错误响应
+├── api/                 # 路由、请求 schema、并发准入
+├── core/                # 配置、部署 settings、异常
+├── services/            # 两参数应用服务、JSON 校验
+├── engine/              # PPTX 包、模板解析、布局、原生渲染
+├── cli.py               # CLI
+└── config/errors/service/generator.py  # 旧公开入口兼容转发
+tests/
+├── unit/                # 服务、语法、布局、样式回归
+├── integration/         # HTTP 与真实模板端到端
+└── fixtures/            # 模板与测试图片
+examples/                # 数据及 Python/HTTP 示例
+docs/                    # 语法、接口、架构、运维、审查
+var/generated/           # 默认运行产物，Git 忽略
 ```
 
-## 测试
+## 验证
 
 ```bash
 PYTHONPATH=src python -m unittest discover -s tests -v
-```
-
-自动化测试覆盖统一入口、多模板页、混合组、文字语法、表格、图片、分页、失败保护和累计资源限制。端到端示例：
-
-```bash
+ruff check src tests examples
+ruff format --check src tests examples
 PYTHONPATH=src python examples/run_multipage_demo.py
 ```
 
-结果生成到 `output/multipage-demo/generated.pptx`。用户原始模板不被修改。
+启动服务后，可运行 `python examples/run_http_demo.py` 验证路径与上传两种输入。示例使用 tests/fixtures/test-multipage.pptx，需要将模板和图片根目录配置到对应 fixtures 目录。代理环境本机测试需设置 `NO_PROXY=127.0.0.1,localhost`。
 
 ## 文档
 
-- [完整方案与实现](docs/solution-and-implementation.md)
+- [完整语法与功能](docs/solution-and-implementation.md)
+- [两参数入口和 HTTP 协议](docs/entry-routing.md)
+- [架构与目录](docs/architecture.md)
+- [生产运行与边界](docs/operations.md)
 - [实现计划与执行记录](docs/implementation-plan.md)
-- [统一入口与自动路由](docs/entry-routing.md)
-- [动态表格功能](docs/table-features.md)
-- [动态图片功能](docs/image-features.md)
-- [模板协议](docs/template-contract.md)
-- [系统架构](docs/architecture.md)
-- [生产运行](docs/operations.md)
 - [代码审查](docs/code-review.md)
+- [表格功能](docs/table-features.md)、[图片功能](docs/image-features.md)、[模板约定](docs/template-contract.md)

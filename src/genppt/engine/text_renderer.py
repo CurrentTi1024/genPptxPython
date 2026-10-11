@@ -10,9 +10,9 @@ from typing import Any
 from pptx.oxml.xmlchemy import OxmlElement
 from pptx.util import Pt
 
-from .config import GeneratorConfig
+from ..core.config import GeneratorConfig
+from ..core.errors import TemplateError
 from .directives import EXPRESSION_RE, optional_path, parse_foreach
-from .errors import TemplateError
 
 PATH = r"[A-Za-z_][\w.]*"
 TOKEN_RE = re.compile(r"{{\s*(" + PATH + r")\s*}}|<if\s+(" + PATH + r")>|</if>")
@@ -133,6 +133,13 @@ def _paragraph_from(source: Any, pieces: list[tuple[str, Any]]) -> Any:
         if not text:
             continue
         if text == "\v" and style is not None and style.tag.endswith("}br"):
+            run = deepcopy(style)
+        elif (
+            style is not None
+            and style.tag.endswith("}fld")
+            and text == "".join(style.xpath("./a:t/text()"))
+        ):
+            # An untouched date/page field beside a placeholder stays a field.
             run = deepcopy(style)
         else:
             run = OxmlElement("a:r")

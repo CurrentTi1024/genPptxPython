@@ -1,6 +1,5 @@
-class GenPptError(Exception):
-    """Base exception for predictable generation failures."""
+"""Compatibility exports for existing library callers."""
 
+from .core.errors import GenPptError, TemplateError
 
-class TemplateError(GenPptError, ValueError):
-    """Raised when a template or payload violates the supported contract."""
+__all__ = ["GenPptError", "TemplateError"]

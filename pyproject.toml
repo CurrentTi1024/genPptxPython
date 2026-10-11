@@ -4,13 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "genppt-dynamic-tables"
-version = "0.4.0"
+version = "0.5.0"
 description = "Template-driven dynamic PowerPoint table and image generation library"
 requires-python = ">=3.10"
-dependencies = ["python-pptx>=1.0,<2.0", "Pillow>=10,<13"]
+dependencies = [
+    "python-pptx>=1.0,<2.0",
+    "Pillow>=10,<13",
+    "fastapi>=0.143,<0.144",
+    "starlette>=1.7,<1.8",
+    "uvicorn>=0.54,<0.55",
+    "python-multipart>=0.0.32,<0.1",
+]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+dev = ["pytest>=8.0", "ruff>=0.6", "httpx2>=2,<3"]
 
 [project.scripts]
 genppt = "genppt.cli:main"
